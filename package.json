@@ -12,7 +12,8 @@
     "format": "biome check --write .",
     "format:check": "biome check .",
     "lint": "biome lint --check .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepare": "npm run build"
   },
   "keywords": [],
   "author": "",

@@ -21,34 +21,111 @@ export function computeFileHash(
   return computeBufferHash(buffer);
 }
 
-export function getGitRepoFiles(repoRoot: string): string[] {
-  const run = (args: string[]) => {
-    const res = spawnSync("git", args, { cwd: repoRoot, encoding: "utf-8" });
-    if (res.error) return "";
-    return res.stdout as string;
-  };
+// Cache for git repository status per directory
+const gitRepoCache = new Map<string, boolean>();
 
-  // Tracked files
-  const tracked = run(["ls-files", "-z"]).split("\u0000").filter(Boolean);
+function isGitRepository(dir: string): boolean {
+  // Normalize the directory path for consistent cache keys
+  const normalizedDir = path.resolve(dir);
 
-  // Untracked but not ignored
-  const untracked = run(["ls-files", "--others", "--exclude-standard", "-z"])
-    .split("\u0000")
-    .filter(Boolean);
+  // Check cache first
+  if (gitRepoCache.has(normalizedDir)) {
+    return gitRepoCache.get(normalizedDir)!;
+  }
 
-  const allRel = Array.from(new Set([...tracked, ...untracked]));
-  return allRel.map((rel) => path.join(repoRoot, rel));
+  let isGit = false;
+  try {
+    const result = spawnSync("git", ["rev-parse", "--git-dir"], {
+      cwd: dir,
+      encoding: "utf-8",
+    });
+    isGit = result.status === 0 && !result.error;
+  } catch {
+    isGit = false;
+  }
+
+  // Cache the result
+  gitRepoCache.set(normalizedDir, isGit);
+  return isGit;
+}
+
+function isHiddenFile(filePath: string, root: string): boolean {
+  const relativePath = path.relative(root, filePath);
+  const parts = relativePath.split(path.sep);
+  return parts.some(
+    (part) => part.startsWith(".") && part !== "." && part !== "..",
+  );
+}
+
+function getAllFilesRecursive(dir: string, root: string): string[] {
+  const files: string[] = [];
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+
+      // Skip hidden files and directories
+      if (isHiddenFile(fullPath, root)) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        files.push(...getAllFilesRecursive(fullPath, root));
+      } else if (entry.isFile()) {
+        files.push(fullPath);
+      }
+    }
+  } catch {
+    // Ignore errors (permissions, etc.)
+  }
+  return files;
+}
+
+export function getDirectoryFiles(dirRoot: string): string[] {
+  // Try to use git if available
+  if (isGitRepository(dirRoot)) {
+    const run = (args: string[]) => {
+      const res = spawnSync("git", args, { cwd: dirRoot, encoding: "utf-8" });
+      if (res.error) return "";
+      return res.stdout as string;
+    };
+
+    // Tracked files
+    const tracked = run(["ls-files", "-z"]).split("\u0000").filter(Boolean);
+
+    // Untracked but not ignored
+    const untracked = run(["ls-files", "--others", "--exclude-standard", "-z"])
+      .split("\u0000")
+      .filter(Boolean);
+
+    const allRel = Array.from(new Set([...tracked, ...untracked]));
+    return allRel.map((rel) => path.join(dirRoot, rel));
+  }
+
+  // Fall back to recursive file system traversal
+  return getAllFilesRecursive(dirRoot, dirRoot);
 }
 
 export function isIgnoredByGit(filePath: string, repoRoot: string): boolean {
-  try {
-    const result = spawnSync("git", ["check-ignore", "-q", "--", filePath], {
-      cwd: repoRoot,
-    });
-    return result.status === 0;
-  } catch {
-    return false;
+  // Always ignore hidden files
+  if (isHiddenFile(filePath, repoRoot)) {
+    return true;
   }
+
+  // Use git ignore if git is available
+  if (isGitRepository(repoRoot)) {
+    try {
+      const result = spawnSync("git", ["check-ignore", "-q", "--", filePath], {
+        cwd: repoRoot,
+      });
+      return result.status === 0;
+    } catch {
+      // If git check fails, don't ignore (we already checked for hidden files)
+      return false;
+    }
+  }
+
+  return false;
 }
 
 export function isDevelopment(): boolean {
@@ -172,7 +249,7 @@ export async function initialSync(
   }) => void,
 ): Promise<{ processed: number; uploaded: number; total: number }> {
   const storeHashes = await listStoreFileHashes(client, store);
-  const repoFiles = filterRepoFiles(getGitRepoFiles(repoRoot), repoRoot);
+  const repoFiles = filterRepoFiles(getDirectoryFiles(repoRoot), repoRoot);
   const total = repoFiles.length;
   let processed = 0;
   let uploaded = 0;

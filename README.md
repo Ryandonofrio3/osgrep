@@ -79,6 +79,7 @@ directory for a pattern.
 | `-m <max_count>` | The maximum number of results to return |
 | `-c` | Show content of the results |
 | `-a` | Generate an answer to the question based on the results |
+| `-s` | Sync the local files to the store before searching |
 
 **Examples:**
 ```bash

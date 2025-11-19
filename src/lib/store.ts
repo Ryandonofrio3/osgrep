@@ -44,6 +44,17 @@ export interface CreateStoreOptions {
   description?: string;
 }
 
+export interface StoreInfo {
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  counts: {
+    pending: number;
+    in_progress: number;
+  };
+}
+
 /**
  * Interface for store operations
  */
@@ -93,6 +104,11 @@ export interface Store {
     search_options?: { rerank?: boolean },
     filters?: SearchFilter,
   ): Promise<AskResponse>;
+
+  /**
+   * Get store information
+   */
+  getInfo(storeId: string): Promise<StoreInfo>;
 }
 
 /**
@@ -193,6 +209,20 @@ export class MixedbreadStore implements Store {
     return {
       answer: response.answer,
       sources: response.sources as ChunkType[],
+    };
+  }
+
+  async getInfo(storeId: string): Promise<StoreInfo> {
+    const response = await this.client.stores.retrieve(storeId, {});
+    return {
+      name: response.name,
+      description: response.description ?? "",
+      created_at: response.created_at,
+      updated_at: response.updated_at,
+      counts: {
+        pending: response.file_counts?.pending ?? 0,
+        in_progress: response.file_counts?.in_progress ?? 0,
+      },
     };
   }
 }

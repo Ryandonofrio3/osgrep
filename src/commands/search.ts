@@ -1,13 +1,15 @@
-import { join, normalize } from "node:path";
+import { join, normalize, relative } from "node:path";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
-import { createStore } from "../lib/context";
+import ora from "ora";
+import { createFileSystem, createStore } from "../lib/context";
 import type {
   AskResponse,
   ChunkType,
   FileMetadata,
   SearchResponse,
 } from "../lib/store";
+import { initialSync } from "../utils";
 
 function extractSources(response: AskResponse): { [key: number]: ChunkType } {
   const sources: { [key: number]: ChunkType } = {};
@@ -110,25 +112,62 @@ export const search: Command = new CommanderCommand("search")
     "Generate an answer to the question based on the results",
     false,
   )
+  .option(
+    "-s, --sync",
+    "Syncs the local files to the store before searching",
+    false,
+  )
   .argument("<pattern>", "The pattern to search for")
   .argument("[path]", "The path to search in")
   .allowUnknownOption(true)
   .allowExcessArguments(true)
   .action(async (pattern, exec_path, _options, cmd) => {
-    const options: { store: string; m: string; c: boolean; a: boolean } =
-      cmd.optsWithGlobals();
+    const options: {
+      store: string;
+      m: string;
+      c: boolean;
+      answer: boolean;
+      sync: boolean;
+    } = cmd.optsWithGlobals();
     if (exec_path?.startsWith("--")) {
       exec_path = "";
     }
 
     try {
       const store = await createStore();
+      const root = process.cwd();
+
+      if (options.sync) {
+        const fileSystem = createFileSystem({
+          ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc"],
+        });
+        const spinner = ora({ text: "Indexing files..." }).start();
+        await initialSync(store, fileSystem, options.store, root, (info) => {
+          const lastProcessed = info.processed;
+          const lastUploaded = info.uploaded;
+          const lastTotal = info.total;
+          const rel = info.filePath?.startsWith(root)
+            ? relative(root, info.filePath)
+            : (info.filePath ?? "");
+          spinner.text = `Indexing files (${lastProcessed}/${lastTotal}) • uploaded ${lastUploaded} ${rel}`;
+        });
+        while (true) {
+          const info = await store.getInfo(options.store);
+          spinner.text = `Indexing ${info.counts.pending + info.counts.in_progress} file(s)`;
+          if (info.counts.pending === 0 && info.counts.in_progress === 0) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        spinner.succeed("Indexing complete");
+      }
+
       const search_path = exec_path?.startsWith("/")
         ? exec_path
-        : normalize(join(process.cwd(), exec_path ?? ""));
+        : normalize(join(root, exec_path ?? ""));
 
       let response: string;
-      if (!options.a) {
+      if (!options.answer) {
         const results = await store.search(
           options.store,
           pattern,

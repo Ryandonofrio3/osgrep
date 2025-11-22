@@ -71,7 +71,6 @@ More agents coming soon (Codex, Cursor, Windsurf, etc.).
 | `osgrep` / `osgrep search <pattern> [path]` | Natural-language search with many `grep`-style flags (`-i`, `-r`, `-m`...). |
 | `osgrep index` | Index the current repo to create a local searchable store. |
 | `osgrep install-claude-code` | Add the osgrep plugin to Claude Code for local queries. |
-| `osgrep watch` | **(Experimental)** Watch for file changes and keep index updated. Requires `OSGREP_ENABLE_WATCH=1`. |
 
 ### osgrep search
 
@@ -115,15 +114,7 @@ osgrep index --path src/lib  # index a specific subdirectory
 osgrep index --dry-run  # see what would be indexed without actually indexing
 ```
 
-### osgrep watch
-
-**⚠️ Experimental:** `osgrep watch` is currently experimental and disabled by default. 
-Use `osgrep index` instead for reliable indexing.
-
-To enable: `OSGREP_ENABLE_WATCH=1 osgrep watch`
-
-Attempts to keep the local store in sync via file watchers, but may have stability issues. 
-Use `osgrep index` for production workflows.
+### osgrep index
 
 It respects the current `.gitignore`, as well as a `.osgrepignore` file in the
 root of the repository.
@@ -144,7 +135,6 @@ root of the repository.
 
 **Environment Variables:**
 - `MXBAI_STORE`: Override the default store name (default: `osgrep`)
-- `OSGREP_ENABLE_WATCH`: Set to `1` to enable the experimental `watch` command
 
 ## Development
 

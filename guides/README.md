@@ -19,7 +19,7 @@ npm install -g @ryandonofrio/osgrep    # or pnpm / bun
 
 ```bash
 cd path/to/repo                     # go to the project you want to index
-osgrep watch                         # index and keep your store in sync
+osgrep index                         # index and keep your store in sync
 
 osgrep "What code parsers are available?"  # ask questions in natural language
 osgrep -a "How is rate limiting implemented?"  # get a human and agent readable answer to the question
@@ -39,10 +39,10 @@ claude
 At a high level, `osgrep` works in two steps:
 
 1. **Index your files.**  
-   When you run `osgrep watch` in a repo, `osgrep`:
+   When you run `osgrep index` in a repo, `osgrep`:
    - Scans your files (respecting `.gitignore` and common build artifacts).
    - Embeds them locally and stores the vectors/FTS data in `~/.osgrep/data`.
-   - Keeps that index up to date as files change via a file watcher.
+   - Keeps that index up to date as files change.
 
 2. **Search with natural language.**  
    - Reranks results so that the most useful matches appear first, even if the
@@ -53,7 +53,7 @@ plain language, and `osgrep` finds the parts of the repo that best answer that
 description.
 
 The claude code plugin will start to index the repo and keep the store in sync
-automatically. No need to run `osgrep watch` manually.
+automatically. No need to run `osgrep index` manually.
 
 ### Example 1: Set up a repo for osgrep and an agent
 
@@ -70,7 +70,7 @@ osgrep "How is error handling wired up in the API layer?" src/api
 
 Now open your editor or Claude Code and point the agent at `~/code/my-project`.
 As you refactor, your index stays fresh automatically, so agent answers stay
-grounded in the latest version of your code. No need to run `osgrep watch`
+grounded in the latest version of your code. No need to run `osgrep index`
 manually for claude code.
 
 ### Example 2: Classic `grep` vs osgrep

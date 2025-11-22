@@ -172,16 +172,6 @@ const cases: EvalCase[] = [
         note: "Skip unchanged files using meta.json.",
     },
     {
-        query: "watch command debounce",
-        expectedPath: "src/commands/watch.ts",
-        note: "Debounced upload on file changes.",
-    },
-    {
-        query: "delete file on unlink",
-        expectedPath: "src/commands/watch.ts",
-        note: "Watcher handles removal.",
-    },
-    {
         query: "index command workflow",
         expectedPath: "src/commands/index.ts",
         note: "Full indexing path and wait loop.",
@@ -190,11 +180,6 @@ const cases: EvalCase[] = [
         query: "doctor command health checks",
         expectedPath: "src/commands/doctor.ts",
         note: "Reports model/data/grammar paths.",
-    },
-    {
-        query: "enable watch command flag",
-        expectedPath: "src/index.ts",
-        note: "OSGREP_ENABLE_WATCH usage.",
     },
     {
         query: "quantized models for embeddings",

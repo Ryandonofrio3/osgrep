@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { extname } from "node:path";
 import pLimit from "p-limit";
 import type { FileSystem } from "./lib/file";
 import type { Store } from "./lib/store";
@@ -16,6 +17,20 @@ const PROFILE_ENABLED =
 const SKIP_META_SAVE =
   process.env.OSGREP_SKIP_META_SAVE === "1" ||
   process.env.OSGREP_SKIP_META_SAVE === "true";
+
+// --- THE VELVET ROPE CONFIGURATION ---
+// Only index these extensions to avoid binary noise and improve relevance.
+const INDEXABLE_EXTENSIONS = new Set([
+  // Code
+  ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp",
+  ".rb", ".php", ".cs", ".swift", ".kt", ".scala", ".lua", ".sh", ".sql", ".html", ".css",
+  ".dart", ".el", ".clj", ".ex", ".exs", ".m", ".mm", ".f90", ".f95",
+  // Config / Data / Docs
+  ".json", ".yaml", ".yml", ".toml", ".xml", ".md", ".mdx", ".txt", ".env", ".gitignore",
+  ".dockerfile", "dockerfile", "makefile"
+]);
+
+const MAX_FILE_SIZE_BYTES = 1024 * 1024; // 1MB limit for semantic indexing
 
 interface IndexingProfile {
   sections: Record<string, number>;
@@ -32,6 +47,30 @@ function now(): bigint {
 
 function toMs(start: bigint, end?: bigint): number {
   return Number((end ?? now()) - start) / 1_000_000;
+}
+
+/**
+ * Checks if a file is worthy of being indexed (semantic relevance + size safety)
+ */
+function isIndexableFile(filePath: string): boolean {
+  // 1. Extension Check
+  const ext = extname(filePath).toLowerCase();
+  // Special handling for files like Dockerfile or Makefile that might have no ext
+  const basename = path.basename(filePath).toLowerCase();
+  if (!INDEXABLE_EXTENSIONS.has(ext) && !INDEXABLE_EXTENSIONS.has(basename)) {
+    return false;
+  }
+
+  // 2. Size Check (Skip huge files that choke the embedder)
+  try {
+    const stats = fs.statSync(filePath);
+    if (stats.size > MAX_FILE_SIZE_BYTES) return false;
+    if (stats.size === 0) return false; // Skip empty files
+  } catch {
+    return false;
+  }
+
+  return true;
 }
 
 export class MetaStore {
@@ -80,17 +119,12 @@ export function computeFileHash(
 }
 
 export function isDevelopment(): boolean {
-  // Check if running from node_modules (published package)
   if (__dirname.includes("node_modules")) {
     return false;
   }
-
-  // Check if NODE_ENV is set to development
   if (process.env.NODE_ENV === "development") {
     return true;
   }
-
-  // Default to local if we can't determine
   return true;
 }
 
@@ -157,6 +191,7 @@ export async function indexFile(
   try {
     await store.indexFile(storeId, contentString, options);
   } catch (_err) {
+    // Fallback for weird encodings
     await store.indexFile(
       storeId,
       new File([new Uint8Array(buffer)], fileName, { type: "text/plain" }),
@@ -166,8 +201,6 @@ export async function indexFile(
 
   if (metaStore) {
     metaStore.set(filePath, hash);
-    // We no longer save metaStore on every file to avoid O(n^2) I/O.
-    // The caller (initialSync) is responsible for periodic or final saves.
   }
 
   if (PROFILE_ENABLED && indexStart && profile) {
@@ -203,11 +236,13 @@ export async function initialSync(
 
   const totalStart = PROFILE_ENABLED ? now() : null;
 
+  // 1. Scan existing store to find what we already have
   const dbPaths = new Set<string>();
   let storeIsEmpty = false;
   let storeHashes: Map<string, string | undefined> = new Map();
   let initialDbCount = 0;
   const storeScanStart = PROFILE_ENABLED ? now() : null;
+  
   try {
     for await (const file of store.listFiles(storeId)) {
       const externalId = file.external_id ?? undefined;
@@ -227,27 +262,32 @@ export async function initialSync(
   } catch (_err) {
     storeIsEmpty = true;
   }
+  
   if (PROFILE_ENABLED && storeScanStart && profile) {
-    profile.sections.storeScan =
-      (profile.sections.storeScan ?? 0) + toMs(storeScanStart);
+    profile.sections.storeScan = (profile.sections.storeScan ?? 0) + toMs(storeScanStart);
   }
 
   if (metaStore && storeHashes.size === 0) {
     storeHashes = new Map();
   }
 
+  // 2. Walk file system and apply the VELVET ROPE filter
   const fileWalkStart = PROFILE_ENABLED ? now() : null;
   const allFiles = Array.from(fileSystem.getFiles(repoRoot));
+  
   if (PROFILE_ENABLED && fileWalkStart && profile) {
-    profile.sections.fileWalk =
-      (profile.sections.fileWalk ?? 0) + toMs(fileWalkStart);
+    profile.sections.fileWalk = (profile.sections.fileWalk ?? 0) + toMs(fileWalkStart);
   }
+
   const repoFiles = allFiles.filter(
-    (filePath) => !fileSystem.isIgnored(filePath, repoRoot),
+    (filePath) => 
+      !fileSystem.isIgnored(filePath, repoRoot) && 
+      isIndexableFile(filePath) // <--- New semantic noise filter
   );
+  
   const diskPaths = new Set(repoFiles);
 
-  // Remove records for files that no longer exist
+  // 3. Delete stale files (files in DB but not on disk)
   const stalePaths = Array.from(dbPaths).filter((p) => !diskPaths.has(p));
   if (stalePaths.length > 0) {
     const staleStart = PROFILE_ENABLED ? now() : null;
@@ -262,7 +302,7 @@ export async function initialSync(
             await store.deleteFile(storeId, p);
             metaStore?.delete(p);
           } catch (_err) {
-            // Ignore individual deletion errors to keep sync going
+            // Ignore individual deletion errors
           }
         }),
       );
@@ -271,90 +311,119 @@ export async function initialSync(
       }
     }
     if (PROFILE_ENABLED && staleStart && profile) {
-      profile.sections.staleDeletes =
-        (profile.sections.staleDeletes ?? 0) + toMs(staleStart);
+      profile.sections.staleDeletes = (profile.sections.staleDeletes ?? 0) + toMs(staleStart);
     }
   }
+
   if (!dryRun && !storeIsEmpty) {
     storeIsEmpty = initialDbCount - stalePaths.length <= 0;
   }
+
   const total = repoFiles.length;
   let processed = 0;
   let indexed = 0;
+  
   if (PROFILE_ENABLED && profile) {
     profile.processed = total;
   }
 
-  // Keep file-level concurrency modest to reduce thermal/load spikes; embed work is serialized in the worker anyway.
-  const concurrency = Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2)));
-  const limit = pLimit(concurrency);
+  // --- ADAPTIVE PACING CONFIGURATION ---
+  const MIN_CONCURRENCY = 1;
+  const MAX_CONCURRENCY = Math.max(1, Math.floor(os.cpus().length / 2));
+  let currentConcurrency = Math.max(1, Math.floor(MAX_CONCURRENCY / 1.5));
+  const BATCH_SIZE = 10; // Process in small chunks to allow breathing room
 
-  await Promise.all(
-    repoFiles.map((filePath) =>
-      limit(async () => {
-        try {
-          const buffer = await fs.promises.readFile(filePath);
-          const hashStart = PROFILE_ENABLED ? now() : null;
-          const hash = computeBufferHash(buffer);
-          if (PROFILE_ENABLED && hashStart && profile) {
-            profile.sections.hash =
-              (profile.sections.hash ?? 0) + toMs(hashStart);
-          }
+  // Process files in batches
+  for (let i = 0; i < repoFiles.length; i += BATCH_SIZE) {
+    const batch = repoFiles.slice(i, i + BATCH_SIZE);
+    const batchStart = Date.now();
 
-          let existingHash: string | undefined;
-          if (metaStore) {
-            existingHash = metaStore.get(filePath);
-          } else {
-            existingHash = storeHashes.get(filePath);
-          }
+    // Re-create limiter based on dynamic concurrency
+    const limit = pLimit(currentConcurrency);
 
-          processed += 1;
-          const shouldIndex =
-            storeIsEmpty || !existingHash || existingHash !== hash;
+    await Promise.all(
+      batch.map((filePath) =>
+        limit(async () => {
+          try {
+            const buffer = await fs.promises.readFile(filePath);
+            const hashStart = PROFILE_ENABLED ? now() : null;
+            const hash = computeBufferHash(buffer);
+            
+            if (PROFILE_ENABLED && hashStart && profile) {
+              profile.sections.hash = (profile.sections.hash ?? 0) + toMs(hashStart);
+            }
 
-          if (dryRun && shouldIndex) {
-            console.log("Dry run: would have indexed", filePath);
-            indexed += 1;
-          } else if (shouldIndex) {
-            const didIndex = await indexFile(
-              store,
-              storeId,
-              filePath,
-              path.basename(filePath),
-              metaStore, // Pass metaStore to update it after indexing
-              profile,
-              buffer,
-              hash,
-            );
-            if (didIndex) {
+            let existingHash: string | undefined;
+            if (metaStore) {
+              existingHash = metaStore.get(filePath);
+            } else {
+              existingHash = storeHashes.get(filePath);
+            }
+
+            processed += 1;
+            const shouldIndex = storeIsEmpty || !existingHash || existingHash !== hash;
+
+            if (dryRun && shouldIndex) {
+              // console.log("Dry run: would have indexed", filePath); // Keep output clean
               indexed += 1;
+            } else if (shouldIndex) {
+              const didIndex = await indexFile(
+                store,
+                storeId,
+                filePath,
+                path.basename(filePath),
+                metaStore,
+                profile,
+                buffer,
+                hash,
+              );
+              if (didIndex) {
+                indexed += 1;
 
-              // Periodic meta save (every 50 files) to avoid data loss on crash
-              // but avoid O(n^2) writes.
-              if (metaStore && !SKIP_META_SAVE && indexed % 50 === 0) {
-                const saveStart = PROFILE_ENABLED ? now() : null;
-                // We don't await this to avoid blocking the indexing pipeline
-                // It might mean concurrent saves, but that's acceptable for the meta file
-                metaStore
-                  .save()
-                  .catch((err) =>
+                // Periodic meta save
+                if (metaStore && !SKIP_META_SAVE && indexed % 25 === 0) {
+                  const saveStart = PROFILE_ENABLED ? now() : null;
+                  metaStore.save().catch((err) =>
                     console.error("Failed to auto-save meta:", err),
                   );
-                if (PROFILE_ENABLED && saveStart && profile) {
-                  profile.metaSaveCount += 1;
-                  profile.sections.metaSave =
-                    (profile.sections.metaSave ?? 0) + toMs(saveStart);
+                  if (PROFILE_ENABLED && saveStart && profile) {
+                    profile.metaSaveCount += 1;
+                    profile.sections.metaSave = (profile.sections.metaSave ?? 0) + toMs(saveStart);
+                  }
                 }
               }
             }
+            onProgress?.({ processed, indexed, total, filePath });
+          } catch (_err) {
+            onProgress?.({ processed, indexed, total, filePath });
           }
-          onProgress?.({ processed, indexed, total, filePath });
-        } catch (_err) {
-          onProgress?.({ processed, indexed, total, filePath });
-        }
-      }),
-    ),
-  );
+        })
+      )
+    );
+
+    // --- THE THERMOSTAT ---
+    // Monitor performance and health after every batch
+    const batchDuration = Date.now() - batchStart;
+    const timePerFile = batchDuration / batch.length;
+    const memUsageMB = process.memoryUsage().rss / 1024 / 1024;
+
+    // Case 1: Getting too hot (Memory spike or very slow processing)
+    if (memUsageMB > 1500) { 
+       // If RSS > 1.5GB, clamp down hard and sleep
+       currentConcurrency = Math.max(MIN_CONCURRENCY, currentConcurrency - 2);
+       // Force a pause to let GC run/system breathe
+       await new Promise(resolve => setTimeout(resolve, 1000)); 
+    } 
+    else if (timePerFile > 300) { 
+       // Taking >300ms per file means embedding/hashing is struggling
+       currentConcurrency = Math.max(MIN_CONCURRENCY, currentConcurrency - 1);
+    } 
+    // Case 2: Cruising comfortably
+    else if (timePerFile < 80 && currentConcurrency < MAX_CONCURRENCY) {
+       // If we are fast (<80ms/file), we can afford more concurrency
+       currentConcurrency++;
+    }
+  }
 
   if (PROFILE_ENABLED && profile) {
     profile.processed = processed;
@@ -372,7 +441,7 @@ export async function initialSync(
     }
   }
 
-  // Create/Update FTS index after sync only if changes occurred
+  // Create/Update FTS & Vector Index only if needed
   if (!dryRun && indexed > 0) {
     const ftsStart = PROFILE_ENABLED ? now() : null;
     await store.createFTSIndex(storeId);
@@ -387,7 +456,7 @@ export async function initialSync(
         (profile.sections.createVectorIndex ?? 0) + toMs(vecStart);
     }
   } else if (!dryRun && indexed === 0) {
-    console.log("[profile] Skipping index rebuild (no new files)");
+    // console.log("[profile] Skipping index rebuild (no new files)");
   }
 
   if (PROFILE_ENABLED && totalStart && profile) {

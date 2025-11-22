@@ -55,6 +55,7 @@ export interface LocalStoreProfile {
 export class LocalStore implements Store {
   private db: lancedb.Connection | null = null;
   private worker!: Worker;
+  private vectorCache = new Map<string, number[]>();
   private pendingRequests = new Map<
     string,
     {
@@ -196,9 +197,42 @@ export class LocalStore implements Store {
   }
 
   private async getEmbeddings(texts: string[]): Promise<number[][]> {
-    return this.enqueueEmbedding(() =>
-      this.sendToWorker<number[][]>((id) => ({ id, texts })),
+    const neededIndices: number[] = [];
+    const neededTexts: string[] = [];
+    const results: number[][] = new Array(texts.length);
+
+    // 1. Check Cache
+    for (let i = 0; i < texts.length; i++) {
+      const text = texts[i];
+      // Using full text as key for correctness. V8 handles string keys efficiently.
+      if (this.vectorCache.has(text)) {
+        results[i] = this.vectorCache.get(text)!;
+      } else {
+        neededIndices.push(i);
+        neededTexts.push(text);
+      }
+    }
+
+    if (neededTexts.length === 0) {
+      return results; // All cached!
+    }
+
+    // 2. Embed only what's missing
+    const computedVectors = await this.enqueueEmbedding(() =>
+      this.sendToWorker<number[][]>((id) => ({ id, texts: neededTexts })),
     );
+
+    // 3. Fill results and update cache
+    for (let i = 0; i < computedVectors.length; i++) {
+      const originalIndex = neededIndices[i];
+      const vector = computedVectors[i];
+      const text = neededTexts[i];
+
+      this.vectorCache.set(text, vector);
+      results[originalIndex] = vector;
+    }
+
+    return results;
   }
 
   private async getEmbedding(text: string): Promise<number[]> {

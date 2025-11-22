@@ -52,10 +52,10 @@ export class TreeSitterChunker {
   private languages: Map<string, TreeSitterLanguage | null> = new Map();
   private initialized = false;
 
-  // Tuned to avoid 512 token truncation in the embed model
-  private readonly MAX_CHUNK_LINES = 40;
-  private readonly MAX_CHUNK_CHARS = 1000;
-  private readonly OVERLAP_LINES = 8;
+  // Tuned for speed: Fill the context window (512 tokens) more aggressively.
+  private readonly MAX_CHUNK_LINES = 75;
+  private readonly MAX_CHUNK_CHARS = 2000;
+  private readonly OVERLAP_LINES = 10;
 
   // For long single-line or low-newline regions (json, lockfiles, huge strings)
   private readonly OVERLAP_CHARS = 200;

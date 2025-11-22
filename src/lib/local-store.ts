@@ -16,6 +16,11 @@ import type {
   StoreInfo,
 } from "./store";
 
+type WorkerRequest =
+  | { id: string; text: string }
+  | { id: string; texts: string[] }
+  | { id: string; rerank: { query: string; documents: string[] } };
+
 const DB_PATH = path.join(os.homedir(), ".osgrep", "data");
 
 interface VectorRecord {
@@ -52,12 +57,19 @@ export class LocalStore implements Store {
   private worker!: Worker;
   private pendingRequests = new Map<
     string,
-    { resolve: (v: number[] | number[][]) => void; reject: (e: any) => void }
+    {
+      resolve: (v: any) => void;
+      reject: (e: any) => void;
+      payload: WorkerRequest;
+    }
   >();
-  private readonly MAX_WORKER_RSS = 3 * 1024 * 1024 * 1024; // 3GB limit for M3/Pro machines
+  private restartInFlight: Promise<void> | null = null;
+  private readonly MAX_WORKER_RSS = 6 * 1024 * 1024 * 1024; // 6GB upper bound, we restart before OOM
   private embedQueue: Promise<void> = Promise.resolve();
   private chunker = new TreeSitterChunker();
   private readonly VECTOR_DIMENSIONS = 384;
+  private readonly EMBED_BATCH_SIZE = 12; // Smaller batches to tame thermals/memory on large repos
+  private readonly WRITE_BATCH_SIZE = 50;
   private readonly queryPrefix =
     "Represent this sentence for searching relevant passages: ";
   private profile: LocalStoreProfile = {
@@ -117,25 +129,49 @@ export class LocalStore implements Store {
         console.warn(
           `Worker memory usage high (${Math.round(memory.rss / 1024 / 1024)}MB). Restarting...`,
         );
-        this.restartWorker();
+        void this.restartWorker("memory limit exceeded");
       }
     });
   }
 
-  private async restartWorker() {
-    // Reject anything still waiting on the old worker
-    const pending = Array.from(this.pendingRequests.values());
-    this.pendingRequests.clear();
-    for (const { reject } of pending) {
-      reject(new Error("Worker restarted"));
+  private async restartWorker(reason?: string) {
+    if (this.restartInFlight) {
+      return this.restartInFlight;
     }
 
-    await this.worker.terminate();
-    this.initializeWorker();
+    const pending = Array.from(this.pendingRequests.entries()).map(
+      ([id, value]) => ({ id, ...value }),
+    );
+    this.pendingRequests.clear();
+
+    this.restartInFlight = (async () => {
+      try {
+        await this.worker.terminate();
+      } catch (err) {
+        console.error("Failed to terminate worker cleanly:", err);
+      }
+      this.initializeWorker();
+      if (reason) {
+        console.warn(`Worker restarted due to ${reason}, replaying in-flight jobs (${pending.length})`);
+      }
+      // Re-dispatch anything that was in flight so callers don't error out
+      for (const request of pending) {
+        this.pendingRequests.set(request.id, request);
+        this.worker.postMessage(request.payload);
+      }
+    })();
+
+    await this.restartInFlight;
+    this.restartInFlight = null;
   }
 
   private async enqueueEmbedding<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.embedQueue.then(fn, fn);
+    const run = this.embedQueue.then(async () => {
+      if (this.restartInFlight) {
+        await this.restartInFlight;
+      }
+      return fn();
+    }, fn);
     // Ensure queue advances even if fn rejects
     this.embedQueue = run.then(
       () => undefined,
@@ -144,14 +180,24 @@ export class LocalStore implements Store {
     return run;
   }
 
+  private async sendToWorker<T>(
+    buildPayload: (id: string) => WorkerRequest,
+  ): Promise<T> {
+    if (this.restartInFlight) {
+      await this.restartInFlight;
+    }
+
+    return new Promise((resolve, reject) => {
+      const id = uuidv4();
+      const payload = buildPayload(id);
+      this.pendingRequests.set(id, { resolve, reject, payload });
+      this.worker.postMessage(payload);
+    });
+  }
+
   private async getEmbeddings(texts: string[]): Promise<number[][]> {
-    return this.enqueueEmbedding(
-      () =>
-        new Promise((resolve, reject) => {
-          const id = uuidv4();
-          this.pendingRequests.set(id, { resolve: resolve as any, reject });
-          this.worker.postMessage({ id, texts });
-        }),
+    return this.enqueueEmbedding(() =>
+      this.sendToWorker<number[][]>((id) => ({ id, texts })),
     );
   }
 
@@ -165,14 +211,12 @@ export class LocalStore implements Store {
     query: string,
     documents: string[],
   ): Promise<number[]> {
-    return this.enqueueEmbedding(
-      () =>
-        new Promise((resolve, reject) => {
-          const id = uuidv4();
-          this.pendingRequests.set(id, { resolve: resolve as any, reject });
-          this.worker.postMessage({ id, rerank: { query, documents } });
-        }),
-    ) as Promise<number[]>;
+    return this.enqueueEmbedding(() =>
+      this.sendToWorker<number[]>((id) => ({
+        id,
+        rerank: { query, documents },
+      })),
+    );
   }
 
   private async getDb(): Promise<lancedb.Connection> {
@@ -556,8 +600,8 @@ export class LocalStore implements Store {
       this.formatChunkText(chunk, options.metadata?.path || ""),
     );
 
-    const BATCH_SIZE = 64;
-    const WRITE_BATCH_SIZE = 50;
+    const BATCH_SIZE = this.EMBED_BATCH_SIZE;
+    const WRITE_BATCH_SIZE = this.WRITE_BATCH_SIZE;
     let pendingWrites: VectorRecord[] = [];
 
     for (let i = 0; i < chunkTexts.length; i += BATCH_SIZE) {

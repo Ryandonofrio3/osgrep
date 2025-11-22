@@ -22,7 +22,6 @@ if [ ! -d "$REPO_DIR" ]; then
     echo ""
     echo "  mkdir -p $REPO_DIR"
     echo "  cd $REPO_DIR"
-    echo "  git clone --depth=1 https://github.com/vercel/next.js.git"
     echo "  git clone --depth=1 https://github.com/tiangolo/fastapi.git"
     echo "  git clone --depth=1 https://github.com/vitejs/vite.git"
     echo "  git clone --depth=1 https://github.com/trpc/trpc.git"

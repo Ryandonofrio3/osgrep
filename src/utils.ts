@@ -285,7 +285,8 @@ export async function initialSync(
     profile.processed = total;
   }
 
-  const concurrency = Math.max(1, Math.floor(os.cpus().length / 2));
+  // Keep file-level concurrency modest to reduce thermal/load spikes; embed work is serialized in the worker anyway.
+  const concurrency = Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2)));
   const limit = pLimit(concurrency);
 
   await Promise.all(

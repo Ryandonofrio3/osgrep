@@ -86,10 +86,24 @@ export class NodeFileSystem implements FileSystem {
   *getFiles(dirRoot: string): Generator<string> {
     this.loadOsgrepignore(dirRoot);
     if (this.git.isGitRepository(dirRoot)) {
-      yield* this.git.getGitFiles(dirRoot);
-    } else {
-      yield* this.getAllFilesRecursive(dirRoot, dirRoot);
+      let yielded = false;
+      for (const file of this.git.getGitFiles(dirRoot)) {
+        yielded = true;
+        yield file;
+      }
+
+      // git can fail silently on very large repos; fall back to filesystem traversal
+      if (!yielded) {
+        console.warn(
+          `git ls-files returned no results for ${dirRoot}. Falling back to filesystem traversal...`,
+        );
+        yield* this.getAllFilesRecursive(dirRoot, dirRoot);
+      }
+
+      return;
     }
+
+    yield* this.getAllFilesRecursive(dirRoot, dirRoot);
   }
 
   isIgnored(filePath: string, root: string): boolean {

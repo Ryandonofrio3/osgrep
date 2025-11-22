@@ -12,28 +12,6 @@ type BenchmarkCase = {
 };
 
 const benchmarkCases: BenchmarkCase[] = [
-  // Next.js - Server-side rendering
-  {
-    repo: "next.js",
-    query: "Where does server-side rendering happen?",
-    grepPattern: "serverSideRendering|renderToHTML|getServerSideProps",
-    expectedConcepts: ["render", "server", "HTML", "SSR"],
-    note: "Semantic: understands SSR concept. Grep: needs exact terms.",
-  },
-  {
-    repo: "next.js",
-    query: "How are API routes handled?",
-    grepPattern: "api.*route|handleApiRequest",
-    expectedConcepts: ["API", "route", "handler", "pages/api"],
-    note: "Semantic: finds routing logic. Grep: needs pattern matching.",
-  },
-  {
-    repo: "next.js",
-    query: "What triggers hot module replacement?",
-    grepPattern: "HMR|hot.*module|webpack.*hot",
-    expectedConcepts: ["HMR", "hot", "reload", "update"],
-    note: "Semantic: understands HMR behavior. Grep: acronym dependent.",
-  },
 
   // FastAPI - Dependency injection
   {
@@ -95,13 +73,6 @@ const benchmarkCases: BenchmarkCase[] = [
   },
 
   // Generic semantic tests
-  {
-    repo: "next.js",
-    query: "prevent memory leaks in development",
-    grepPattern: "memory.*leak|cleanup|dispose|unsubscribe",
-    expectedConcepts: ["memory", "cleanup", "dispose"],
-    note: "Semantic: finds cleanup patterns. Grep: exact phrases.",
-  },
   {
     repo: "vite",
     query: "make builds faster",

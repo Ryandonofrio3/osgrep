@@ -1,13 +1,12 @@
-
 import { Command } from "commander";
 import { createFileSystem, createStore } from "../lib/context";
+import { ensureSetup } from "../lib/setup-helpers";
+import { ensureStoreExists } from "../lib/store-helpers";
 import {
   createIndexingSpinner,
   formatDryRunSummary,
 } from "../lib/sync-helpers";
 import { initialSync, MetaStore } from "../utils";
-import { ensureSetup } from "../lib/setup-helpers";
-import { ensureStoreExists } from "../lib/store-helpers";
 
 const PROFILE_ENABLED =
   process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
@@ -33,7 +32,16 @@ export const index = new Command("index")
       const store = await createStore();
       await ensureStoreExists(store, options.store);
       const fileSystem = createFileSystem({
-        ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb"],
+        ignorePatterns: [
+          "*.lock",
+          "*.bin",
+          "*.ipynb",
+          "*.pyc",
+          "pnpm-lock.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "bun.lockb",
+        ],
       });
       const indexRoot = options.path || process.cwd();
       const metaStore = new MetaStore();
@@ -60,16 +68,13 @@ export const index = new Command("index")
           onProgress,
           metaStore,
         );
-        
+
         if (options.dryRun) {
           spinner.succeed(
             `Dry run complete (${result.processed}/${result.total}) • would have indexed ${result.indexed}`,
           );
-          if (
-            PROFILE_ENABLED &&
-            typeof (store as any).getProfile === "function"
-          ) {
-            console.log("[profile] local store:", (store as any).getProfile());
+          if (PROFILE_ENABLED && typeof store.getProfile === "function") {
+            console.log("[profile] local store:", store.getProfile());
           }
           console.log(
             formatDryRunSummary(result, {
@@ -89,17 +94,14 @@ export const index = new Command("index")
           }
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
-        
+
         spinner.succeed(
           `Indexing complete (${result.processed}/${result.total}) • indexed ${result.indexed}`,
         );
-        if (
-          PROFILE_ENABLED &&
-          typeof (store as any).getProfile === "function"
-        ) {
-          console.log("[profile] local store:", (store as any).getProfile());
+        if (PROFILE_ENABLED && typeof store.getProfile === "function") {
+          console.log("[profile] local store:", store.getProfile());
         }
-        
+
         // Exit cleanly after successful indexing
         process.exit(0);
       } catch (e) {

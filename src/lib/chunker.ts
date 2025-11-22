@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
 
 // web-tree-sitter ships a CommonJS build
 const TreeSitter = require("web-tree-sitter");
@@ -12,8 +12,7 @@ const GRAMMARS_DIR = path.join(os.homedir(), ".osgrep", "grammars");
 const GRAMMAR_URLS: Record<string, string> = {
   typescript:
     "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-typescript.wasm",
-  tsx:
-    "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-tsx.wasm",
+  tsx: "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-tsx.wasm",
   python:
     "https://github.com/tree-sitter/tree-sitter-python/releases/latest/download/tree-sitter-python.wasm",
 };
@@ -26,9 +25,31 @@ export interface Chunk {
   context?: string[];
 }
 
+// Minimal TreeSitter node interface
+interface TreeSitterNode {
+  type: string;
+  text: string;
+  startPosition: { row: number; column: number };
+  endPosition: { row: number; column: number };
+  startIndex: number;
+  endIndex: number;
+  namedChildren?: TreeSitterNode[];
+  parent?: TreeSitterNode;
+  childForFieldName?: (field: string) => TreeSitterNode | null;
+}
+
+// TreeSitter Parser and Language types
+interface TreeSitterParser {
+  init(options: { locator: string }): Promise<void>;
+  setLanguage(language: TreeSitterLanguage): void;
+  parse(content: string): { rootNode: TreeSitterNode };
+}
+
+type TreeSitterLanguage = Record<string, never>;
+
 export class TreeSitterChunker {
-  private parser: any = null;
-  private languages: Map<string, any> = new Map();
+  private parser: TreeSitterParser | null = null;
+  private languages: Map<string, TreeSitterLanguage | null> = new Map();
   private initialized = false;
 
   // Tuned to avoid 512 token truncation in the embed model
@@ -45,7 +66,7 @@ export class TreeSitterChunker {
       await Parser.init({
         locator: require.resolve("web-tree-sitter/tree-sitter.wasm"),
       });
-      this.parser = new Parser();
+      this.parser = new Parser() as TreeSitterParser;
     } catch (err) {
       console.error(
         "Falling back to paragraph chunking; tree-sitter init failed:",
@@ -60,8 +81,9 @@ export class TreeSitterChunker {
     this.initialized = true;
   }
 
-  private async getLanguage(lang: string): Promise<any> {
-    if (this.languages.has(lang)) return this.languages.get(lang)!;
+  private async getLanguage(lang: string): Promise<TreeSitterLanguage | null> {
+    const cached = this.languages.get(lang);
+    if (cached !== undefined) return cached;
 
     const wasmPath = path.join(GRAMMARS_DIR, `tree-sitter-${lang}.wasm`);
     if (!fs.existsSync(wasmPath)) {
@@ -75,7 +97,9 @@ export class TreeSitterChunker {
     }
 
     try {
-      const language = Language ? await Language.load(wasmPath) : null;
+      const language = Language
+        ? ((await Language.load(wasmPath)) as TreeSitterLanguage | null)
+        : null;
       this.languages.set(lang, language);
       return language;
     } catch {
@@ -123,7 +147,7 @@ export class TreeSitterChunker {
     if (!lang) return [];
 
     const language = await this.getLanguage(lang);
-    if (!language) return [];
+    if (!language || !this.parser) return [];
 
     this.parser.setLanguage(language);
     const tree = this.parser.parse(content);
@@ -145,31 +169,31 @@ export class TreeSitterChunker {
         "class_definition",
       ].includes(t);
 
-    const classify = (node: any): "function" | "class" | "other" => {
+    const classify = (node: TreeSitterNode): "function" | "class" | "other" => {
       const t = node.type;
       if (t.includes("class")) return "class";
       if (isDefType(t)) return "function";
       return "other";
     };
 
-    const unwrapExport = (node: any) => {
-      if (node.type === "export_statement" && node.namedChildren?.length > 0) {
+    const unwrapExport = (node: TreeSitterNode): TreeSitterNode => {
+      if (
+        node.type === "export_statement" &&
+        node.namedChildren &&
+        node.namedChildren.length > 0
+      ) {
         return node.namedChildren[0];
       }
       return node;
     };
 
     // Treat lexical/variable declarations with function-like bodies as defs
-    const isTopLevelValueDef = (node: any) => {
+    const isTopLevelValueDef = (node: TreeSitterNode): boolean => {
       const t = node.type;
-      if (t !== "lexical_declaration" && t !== "variable_declaration") return false;
+      if (t !== "lexical_declaration" && t !== "variable_declaration")
+        return false;
       const parentType = node.parent?.type || "";
-      const allowedParents = [
-        "program",
-        "module",
-        "source_file",
-        "class_body",
-      ];
+      const allowedParents = ["program", "module", "source_file", "class_body"];
       if (parentType && !allowedParents.includes(parentType)) return false;
       const text = node.text || "";
       if (text.includes("=>")) return true;
@@ -178,9 +202,12 @@ export class TreeSitterChunker {
       return false;
     };
 
-    const getNodeName = (node: any): string | null => {
+    const getNodeName = (node: TreeSitterNode): string | null => {
       const byField = (field: string) => {
-        const child = typeof node.childForFieldName === "function" ? node.childForFieldName(field) : null;
+        const child =
+          typeof node.childForFieldName === "function"
+            ? node.childForFieldName(field)
+            : null;
         if (child?.text) return String(child.text);
         return null;
       };
@@ -191,40 +218,54 @@ export class TreeSitterChunker {
         if (name) return name;
       }
 
-      const identifierChild = (node.namedChildren ?? []).find((c: any) =>
-        ["identifier", "property_identifier", "type_identifier", "field_identifier"].includes(c.type),
+      const identifierChild = (node.namedChildren ?? []).find((c) =>
+        [
+          "identifier",
+          "property_identifier",
+          "type_identifier",
+          "field_identifier",
+        ].includes(c.type),
       );
       if (identifierChild?.text) return String(identifierChild.text);
 
       for (const child of node.namedChildren ?? []) {
         if (child.type === "variable_declarator") {
-          const idChild = (child.namedChildren ?? []).find((c: any) =>
-            ["identifier", "property_identifier", "type_identifier"].includes(c.type),
+          const idChild = (child.namedChildren ?? []).find((c) =>
+            ["identifier", "property_identifier", "type_identifier"].includes(
+              c.type,
+            ),
           );
           if (idChild?.text) return String(idChild.text);
         }
       }
 
-      const match = (node.text || "").match(/(?:class|function)\s+([A-Za-z0-9_$]+)/);
+      const match = (node.text || "").match(
+        /(?:class|function)\s+([A-Za-z0-9_$]+)/,
+      );
       if (match?.[1]) return match[1];
 
-      const varMatch = (node.text || "").match(/(?:const|let|var)\s+([A-Za-z0-9_$]+)/);
+      const varMatch = (node.text || "").match(
+        /(?:const|let|var)\s+([A-Za-z0-9_$]+)/,
+      );
       if (varMatch?.[1]) return varMatch[1];
 
       return null;
     };
 
-    const labelForNode = (node: any): string | null => {
+    const labelForNode = (node: TreeSitterNode): string | null => {
       const name = getNodeName(node);
       const t = node.type;
       if (t.includes("class")) return `Class: ${name ?? "<anonymous class>"}`;
-      if (t.includes("method")) return `Method: ${name ?? "<anonymous method>"}`;
-      if (t.includes("function")) return `Function: ${name ?? "<anonymous function>"}`;
-      if (isTopLevelValueDef(node)) return `Function: ${name ?? "<anonymous function>"}`;
+      if (t.includes("method"))
+        return `Method: ${name ?? "<anonymous method>"}`;
+      if (t.includes("function"))
+        return `Function: ${name ?? "<anonymous function>"}`;
+      if (isTopLevelValueDef(node))
+        return `Function: ${name ?? "<anonymous function>"}`;
       return name ? `Symbol: ${name}` : null;
     };
 
-    const addChunk = (node: any, context: string[]) => {
+    const addChunk = (node: TreeSitterNode, context: string[]) => {
       chunks.push({
         content: node.text,
         startLine: node.startPosition.row,
@@ -234,9 +275,10 @@ export class TreeSitterChunker {
       });
     };
 
-    const visit = (node: any, stack: string[]) => {
+    const visit = (node: TreeSitterNode, stack: string[]) => {
       const effective = unwrapExport(node);
-      const isDefinition = isDefType(effective.type) || isTopLevelValueDef(effective);
+      const isDefinition =
+        isDefType(effective.type) || isTopLevelValueDef(effective);
       let nextStack = stack;
 
       if (isDefinition) {
@@ -256,7 +298,8 @@ export class TreeSitterChunker {
       visit(child, [fileContext]);
 
       const effective = unwrapExport(child);
-      const isDefinition = isDefType(effective.type) || isTopLevelValueDef(effective);
+      const isDefinition =
+        isDefType(effective.type) || isTopLevelValueDef(effective);
       if (!isDefinition) continue;
 
       if (child.startIndex > cursorIndex) {
@@ -310,10 +353,7 @@ export class TreeSitterChunker {
     }
 
     // If huge but low-newline, split by chars
-    if (
-      charCount > this.MAX_CHUNK_CHARS &&
-      lineCount <= this.MAX_CHUNK_LINES
-    ) {
+    if (charCount > this.MAX_CHUNK_CHARS && lineCount <= this.MAX_CHUNK_LINES) {
       return this.splitByChars(chunk);
     }
 
@@ -330,7 +370,7 @@ export class TreeSitterChunker {
 
       let subContent = subLines.join("\n");
       if (header && i > 0 && chunk.type !== "block") {
-        subContent = header + "\n" + subContent;
+        subContent = `${header}\n${subContent}`;
       }
 
       subChunks.push({

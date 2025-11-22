@@ -31,16 +31,21 @@ function getPaths(): SetupPaths {
  * Idempotent helper that ensures osgrep directories and models exist.
  * Returns status about work performed so callers can decide what to show.
  */
-export async function ensureSetup(
-  { silent }: { silent?: boolean } = {},
-): Promise<SetupStatus> {
+export async function ensureSetup({
+  silent,
+}: {
+  silent?: boolean;
+} = {}): Promise<SetupStatus> {
   const paths = getPaths();
   const dirs = [paths.root, paths.models, paths.data, paths.grammars];
 
   const needsDirs = dirs.some((dir) => !fs.existsSync(dir));
   let createdDirs = false;
 
-  const dirSpinner = !silent && needsDirs ? ora("Preparing osgrep directories...").start() : null;
+  const dirSpinner =
+    !silent && needsDirs
+      ? ora("Preparing osgrep directories...").start()
+      : null;
   try {
     if (needsDirs) {
       dirs.forEach((dir) => {
@@ -60,7 +65,9 @@ export async function ensureSetup(
   let downloadedModels = false;
 
   if (!modelsPresent) {
-    const modelSpinner = !silent ? ora("Downloading models (first run)...").start() : null;
+    const modelSpinner = !silent
+      ? ora("Downloading models (first run)...").start()
+      : null;
     try {
       await downloadModels();
       downloadedModels = true;

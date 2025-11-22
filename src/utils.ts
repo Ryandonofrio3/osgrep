@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
 import pLimit from "p-limit";
 import type { FileSystem } from "./lib/file";
 import type { Store } from "./lib/store";
@@ -43,7 +43,7 @@ export class MetaStore {
     try {
       const content = await fs.promises.readFile(META_FILE, "utf-8");
       this.data = JSON.parse(content);
-    } catch (e) {
+    } catch (_e) {
       this.data = {};
     }
     this.loaded = true;
@@ -216,7 +216,9 @@ export async function initialSync(
       if (!metaStore) {
         const metadata = file.metadata;
         const hash: string | undefined =
-          metadata && typeof metadata.hash === "string" ? metadata.hash : undefined;
+          metadata && typeof metadata.hash === "string"
+            ? metadata.hash
+            : undefined;
         storeHashes.set(externalId, hash);
       }
     }
@@ -226,7 +228,8 @@ export async function initialSync(
     storeIsEmpty = true;
   }
   if (PROFILE_ENABLED && storeScanStart && profile) {
-    profile.sections.storeScan = (profile.sections.storeScan ?? 0) + toMs(storeScanStart);
+    profile.sections.storeScan =
+      (profile.sections.storeScan ?? 0) + toMs(storeScanStart);
   }
 
   if (metaStore && storeHashes.size === 0) {
@@ -236,7 +239,8 @@ export async function initialSync(
   const fileWalkStart = PROFILE_ENABLED ? now() : null;
   const allFiles = Array.from(fileSystem.getFiles(repoRoot));
   if (PROFILE_ENABLED && fileWalkStart && profile) {
-    profile.sections.fileWalk = (profile.sections.fileWalk ?? 0) + toMs(fileWalkStart);
+    profile.sections.fileWalk =
+      (profile.sections.fileWalk ?? 0) + toMs(fileWalkStart);
   }
   const repoFiles = allFiles.filter(
     (filePath) => !fileSystem.isIgnored(filePath, repoRoot),
@@ -248,7 +252,9 @@ export async function initialSync(
   if (stalePaths.length > 0) {
     const staleStart = PROFILE_ENABLED ? now() : null;
     if (dryRun) {
-      stalePaths.forEach((p) => console.log("Dry run: would delete", p));
+      for (const p of stalePaths) {
+        console.log("Dry run: would delete", p);
+      }
     } else {
       await Promise.all(
         stalePaths.map(async (p) => {
@@ -290,7 +296,8 @@ export async function initialSync(
           const hashStart = PROFILE_ENABLED ? now() : null;
           const hash = computeBufferHash(buffer);
           if (PROFILE_ENABLED && hashStart && profile) {
-            profile.sections.hash = (profile.sections.hash ?? 0) + toMs(hashStart);
+            profile.sections.hash =
+              (profile.sections.hash ?? 0) + toMs(hashStart);
           }
 
           let existingHash: string | undefined;
@@ -320,17 +327,22 @@ export async function initialSync(
             );
             if (didIndex) {
               indexed += 1;
-              
+
               // Periodic meta save (every 50 files) to avoid data loss on crash
               // but avoid O(n^2) writes.
               if (metaStore && !SKIP_META_SAVE && indexed % 50 === 0) {
                 const saveStart = PROFILE_ENABLED ? now() : null;
                 // We don't await this to avoid blocking the indexing pipeline
                 // It might mean concurrent saves, but that's acceptable for the meta file
-                metaStore.save().catch(err => console.error("Failed to auto-save meta:", err));
+                metaStore
+                  .save()
+                  .catch((err) =>
+                    console.error("Failed to auto-save meta:", err),
+                  );
                 if (PROFILE_ENABLED && saveStart && profile) {
                   profile.metaSaveCount += 1;
-                  profile.sections.metaSave = (profile.sections.metaSave ?? 0) + toMs(saveStart);
+                  profile.sections.metaSave =
+                    (profile.sections.metaSave ?? 0) + toMs(saveStart);
                 }
               }
             }
@@ -354,7 +366,8 @@ export async function initialSync(
     await metaStore.save();
     if (PROFILE_ENABLED && finalSaveStart && profile) {
       profile.metaSaveCount += 1;
-      profile.sections.metaSave = (profile.sections.metaSave ?? 0) + toMs(finalSaveStart);
+      profile.sections.metaSave =
+        (profile.sections.metaSave ?? 0) + toMs(finalSaveStart);
     }
   }
 
@@ -386,7 +399,10 @@ export async function initialSync(
     console.log(
       "[profile] timing (ms):",
       Object.fromEntries(
-        Object.entries(profile.sections).map(([k, v]) => [k, Number(v.toFixed(2))]),
+        Object.entries(profile.sections).map(([k, v]) => [
+          k,
+          Number(v.toFixed(2)),
+        ]),
       ),
     );
     console.log(

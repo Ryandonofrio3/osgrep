@@ -14,9 +14,7 @@
       "author": {
         "name": "Ryan D'Onofrio"
       },
-      "skills": [
-        "./skills/osgrep"
-      ],
+      "skills": ["./skills/osgrep"],
       "keywords": ["search", "semantic", "grep", "code-search"]
     }
   ]

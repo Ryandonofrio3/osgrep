@@ -1,6 +1,9 @@
 import type { Store } from "./store";
 
-export async function ensureStoreExists(store: Store, storeId: string): Promise<void> {
+export async function ensureStoreExists(
+  store: Store,
+  storeId: string,
+): Promise<void> {
   try {
     await store.retrieve(storeId);
   } catch {
@@ -11,7 +14,10 @@ export async function ensureStoreExists(store: Store, storeId: string): Promise<
   }
 }
 
-export async function isStoreEmpty(store: Store, storeId: string): Promise<boolean> {
+export async function isStoreEmpty(
+  store: Store,
+  storeId: string,
+): Promise<boolean> {
   try {
     for await (const _ of store.listFiles(storeId)) {
       return false;

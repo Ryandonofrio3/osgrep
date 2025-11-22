@@ -5,7 +5,7 @@ import {
 } from "./file";
 import { type Git, NodeGit } from "./git";
 import { LocalStore } from "./local-store";
-import { type Store } from "./store";
+import type { Store } from "./store";
 
 /**
  * Creates a Store instance

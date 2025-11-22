@@ -1,14 +1,16 @@
-import { Command } from "commander";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as fs from "node:fs";
+import { Command } from "commander";
 import { ensureSetup } from "../lib/setup-helpers";
 
 export const setup = new Command("setup")
   .description("One-time setup: download models and prepare osgrep")
   .action(async () => {
     console.log("osgrep Setup\n");
-    console.log("This will download models (~150MB) and prepare your system.\n");
+    console.log(
+      "This will download models (~150MB) and prepare your system.\n",
+    );
 
     const home = os.homedir();
     const root = path.join(home, ".osgrep");

@@ -1,20 +1,16 @@
-import { join, normalize, extname } from "node:path";
+import { extname, join, normalize } from "node:path";
+import { highlight } from "cli-highlight";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
 import { createFileSystem, createStore } from "../lib/context";
-import type {
-  ChunkType,
-  FileMetadata,
-  SearchResponse,
-} from "../lib/store";
 import { ensureSetup } from "../lib/setup-helpers";
-import { highlight } from "cli-highlight";
+import type { ChunkType, FileMetadata, SearchResponse } from "../lib/store";
+import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
 import {
   createIndexingSpinner,
   formatDryRunSummary,
 } from "../lib/sync-helpers";
 import { initialSync, MetaStore } from "../utils";
-import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
 
 function detectLanguage(filePath: string): string {
   const ext = extname(filePath).toLowerCase();
@@ -133,12 +129,22 @@ export const search: Command = new CommanderCommand("search")
       const store = await createStore();
       await ensureStoreExists(store, options.store);
       const root = process.cwd();
-      const autoSync = options.sync || (await isStoreEmpty(store, options.store));
+      const autoSync =
+        options.sync || (await isStoreEmpty(store, options.store));
       let didSync = false;
 
       if (autoSync) {
         const fileSystem = createFileSystem({
-          ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb"],
+          ignorePatterns: [
+            "*.lock",
+            "*.bin",
+            "*.ipynb",
+            "*.pyc",
+            "pnpm-lock.yaml",
+            "package-lock.json",
+            "yarn.lock",
+            "bun.lockb",
+          ],
         });
         const metaStore = new MetaStore();
         const { spinner, onProgress } = createIndexingSpinner(
@@ -152,7 +158,7 @@ export const search: Command = new CommanderCommand("search")
           root,
           options.dryRun,
           onProgress,
-          metaStore
+          metaStore,
         );
         while (true) {
           const info = await store.getInfo(options.store);
@@ -195,7 +201,7 @@ export const search: Command = new CommanderCommand("search")
           ],
         },
       );
-      
+
       // Hint if store is empty
       if (results.data.length === 0) {
         if (!didSync) {
@@ -214,10 +220,10 @@ export const search: Command = new CommanderCommand("search")
           }
         }
       }
-      
+
       const response = formatSearchResponse(results, options.c);
       console.log(response);
-      
+
       // Exit cleanly after successful search
       process.exit(0);
     } catch (error) {

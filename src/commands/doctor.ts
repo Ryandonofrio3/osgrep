@@ -1,7 +1,7 @@
-import { Command } from "commander";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as fs from "node:fs";
+import { Command } from "commander";
 
 export const doctor = new Command("doctor")
   .description("Check osgrep health and paths")
@@ -14,14 +14,14 @@ export const doctor = new Command("doctor")
     const data = path.join(root, "data");
     const grammars = path.join(root, "grammars");
     const modelIds = [
-        "mixedbread-ai/mxbai-embed-xsmall-v1",
-        "mixedbread-ai/mxbai-rerank-xsmall-v1",
+      "mixedbread-ai/mxbai-embed-xsmall-v1",
+      "mixedbread-ai/mxbai-rerank-xsmall-v1",
     ];
 
     const checkDir = (name: string, p: string) => {
-        const exists = fs.existsSync(p);
-        const symbol = exists ? "✅" : "❌";
-        console.log(`${symbol} ${name}: ${p}`);
+      const exists = fs.existsSync(p);
+      const symbol = exists ? "✅" : "❌";
+      console.log(`${symbol} ${name}: ${p}`);
     };
 
     checkDir("Root", root);
@@ -30,25 +30,27 @@ export const doctor = new Command("doctor")
     checkDir("Grammars", grammars);
 
     const modelStatuses = modelIds.map((id) => {
-        const modelPath = path.join(models, ...id.split("/"));
-        return { id, path: modelPath, exists: fs.existsSync(modelPath) };
+      const modelPath = path.join(models, ...id.split("/"));
+      return { id, path: modelPath, exists: fs.existsSync(modelPath) };
     });
 
     modelStatuses.forEach(({ id, path: p, exists }) => {
-        const symbol = exists ? "✅" : "❌";
-        console.log(`${symbol} Model: ${id} (${p})`);
+      const symbol = exists ? "✅" : "❌";
+      console.log(`${symbol} Model: ${id} (${p})`);
     });
 
     const missingModels = modelStatuses.filter(({ exists }) => !exists);
     if (missingModels.length > 0) {
-        console.log(
-            "❌ Some models are missing and will be downloaded automatically on first run.",
-        );
+      console.log(
+        "❌ Some models are missing and will be downloaded automatically on first run.",
+      );
     }
 
-    console.log(`\nSystem: ${os.platform()} ${os.arch()} | Node: ${process.version}`);
+    console.log(
+      `\nSystem: ${os.platform()} ${os.arch()} | Node: ${process.version}`,
+    );
     console.log("\nIf you see ✅ everywhere, you are ready to grep.");
-    
+
     // Exit cleanly
     process.exit(0);
   });

@@ -1,6 +1,6 @@
-import { env, pipeline } from "@huggingface/transformers";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
+import { env, pipeline } from "@huggingface/transformers";
 
 const HOMEDIR = os.homedir();
 const CACHE_DIR = path.join(HOMEDIR, ".osgrep", "models");
@@ -14,10 +14,10 @@ export async function downloadModels(): Promise<void> {
   env.cacheDir = CACHE_DIR;
   env.allowLocalModels = true;
   env.allowRemoteModels = true; // Enable remote for downloading
-  
+
   const embedModelId = "mixedbread-ai/mxbai-embed-xsmall-v1";
   const rerankModelId = "mixedbread-ai/mxbai-rerank-xsmall-v1";
-  
+
   console.log(`Worker: Loading models from ${CACHE_DIR}...`);
 
   const loadedPipelines = [];
@@ -29,14 +29,18 @@ export async function downloadModels(): Promise<void> {
       quantized: true,
     } as any);
     loadedPipelines.push(embedPipeline);
-    
+
     // Load rerank model
-    const rerankPipeline = await pipeline("text-classification", rerankModelId, {
-      dtype: "q8",
-      quantized: true,
-    } as any);
+    const rerankPipeline = await pipeline(
+      "text-classification",
+      rerankModelId,
+      {
+        dtype: "q8",
+        quantized: true,
+      } as any,
+    );
     loadedPipelines.push(rerankPipeline);
-    
+
     console.log("Worker: Models loaded.");
   } finally {
     // Dispose pipelines to clean up native resources before exit
@@ -55,8 +59,16 @@ export async function downloadModels(): Promise<void> {
  */
 export function areModelsDownloaded(): boolean {
   const fs = require("node:fs");
-  const embedModelPath = path.join(CACHE_DIR, "mixedbread-ai", "mxbai-embed-xsmall-v1");
-  const rerankModelPath = path.join(CACHE_DIR, "mixedbread-ai", "mxbai-rerank-xsmall-v1");
-  
+  const embedModelPath = path.join(
+    CACHE_DIR,
+    "mixedbread-ai",
+    "mxbai-embed-xsmall-v1",
+  );
+  const rerankModelPath = path.join(
+    CACHE_DIR,
+    "mixedbread-ai",
+    "mxbai-rerank-xsmall-v1",
+  );
+
   return fs.existsSync(embedModelPath) && fs.existsSync(rerankModelPath);
 }

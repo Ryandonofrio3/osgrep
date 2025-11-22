@@ -21,3 +21,4 @@ echo '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContex
 exit 0
 
 
+

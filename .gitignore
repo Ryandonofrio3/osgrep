@@ -4,3 +4,6 @@ node_modules/
 *.tgz
 ADVANCED.md
 test-build.sh
+TEST_SUITE_PROMPT.md
+WATCH_MODE_PROMPT.md
+plugins/osgrep/hooks/osgrep_index.sh

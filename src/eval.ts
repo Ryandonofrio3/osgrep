@@ -3,8 +3,10 @@ import { LocalStore } from "./lib/local-store";
 type EvalCase = {
     query: string;
     expectedPath: string;
+    avoidPath?: string; // <--- New field: If this ranks HIGHER than expected, it's a fail.
     note?: string;
 };
+
 
 const cases: EvalCase[] = [
     {
@@ -32,6 +34,27 @@ const cases: EvalCase[] = [
         expectedPath: "src/lib/local-store.ts",
         note: "Vector index configuration",
     },
+    {
+        query: "prevent the background process from crashing the computer",
+        expectedPath: "src/lib/local-store.ts",
+        note: "Targeting MAX_WORKER_RSS logic without saying 'memory' or 'worker'",
+    },
+    {
+        query: "turn the text into numbers",
+        expectedPath: "src/lib/worker.ts",
+        note: "Targeting the 'embed' function without saying 'embedding'",
+    },
+    {
+        query: "cleanup zombie files",
+        expectedPath: "src/utils.ts", // or wherever you put the delete logic
+        note: "Targeting the pruning logic without saying 'delete' or 'unlink'",
+    },
+
+    {
+        query: "search command implementation",
+        expectedPath: "src/commands/search.ts",
+        avoidPath: "src/index.ts", // Index imports search, but doesn't implement it
+    }
 ];
 
 const storeId = process.argv[2] ?? "default";

@@ -31,6 +31,20 @@ interface VectorRecord {
 
 import { TreeSitterChunker } from "./chunker";
 
+const PROFILE_ENABLED =
+    process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
+
+export interface LocalStoreProfile {
+    listFilesMs: number;
+    uploadCount: number;
+    totalChunkCount: number;
+    totalEmbedBatches: number;
+    totalChunkTimeMs: number;
+    totalEmbedTimeMs: number;
+    totalTableWriteMs: number;
+    totalTableDeleteMs: number;
+}
+
 export class LocalStore implements Store {
     private db: lancedb.Connection | null = null;
     private worker!: Worker;
@@ -38,12 +52,22 @@ export class LocalStore implements Store {
         string,
         { resolve: (v: number[] | number[][]) => void; reject: (e: any) => void }
     >();
-    private readonly MAX_WORKER_RSS = 1.5 * 1024 * 1024 * 1024; // restart only when truly high to avoid churn
+    private readonly MAX_WORKER_RSS = 3 * 1024 * 1024 * 1024; // 3GB limit for M3/Pro machines
     private embedQueue: Promise<void> = Promise.resolve();
     private chunker = new TreeSitterChunker();
-    private readonly VECTOR_DIMENSIONS = 512;
+    private readonly VECTOR_DIMENSIONS = 384;
     private readonly queryPrefix =
         "Represent this sentence for searching relevant passages: ";
+    private profile: LocalStoreProfile = {
+        listFilesMs: 0,
+        uploadCount: 0,
+        totalChunkCount: 0,
+        totalEmbedBatches: 0,
+        totalChunkTimeMs: 0,
+        totalEmbedTimeMs: 0,
+        totalTableWriteMs: 0,
+        totalTableDeleteMs: 0,
+    };
 
     constructor() {
         this.initializeWorker();
@@ -178,6 +202,7 @@ export class LocalStore implements Store {
     }
 
     async *listFiles(storeId: string): AsyncGenerator<StoreFile> {
+        const start = PROFILE_ENABLED ? process.hrtime.bigint() : null;
         try {
             const table = await this.getTable(storeId);
             // This is a simplification; ideally we'd group by file path
@@ -199,6 +224,11 @@ export class LocalStore implements Store {
             }
         } catch (e) {
             // Table might not exist
+        } finally {
+            if (PROFILE_ENABLED && start) {
+                const end = process.hrtime.bigint();
+                this.profile.listFilesMs += Number(end - start) / 1_000_000;
+            }
         }
     }
 
@@ -207,6 +237,11 @@ export class LocalStore implements Store {
         file: File | ReadableStream | any,
         options: UploadFileOptions,
     ): Promise<void> {
+        const fileUploadStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
+        let fileChunkMs = 0;
+        let fileEmbedMs = 0;
+        let fileDeleteMs = 0;
+        let fileWriteMs = 0;
         const table = await this.ensureTable(storeId);
 
         // Read file content (prefer provided content to avoid double reads)
@@ -230,14 +265,31 @@ export class LocalStore implements Store {
         // Delete existing chunks for this file
         const safePath = options.metadata?.path?.replace(/'/g, "''");
         if (safePath) {
+            const deleteStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
             await table.delete(`path = '${safePath}'`);
+            if (PROFILE_ENABLED && deleteStart) {
+                const deleteEnd = process.hrtime.bigint();
+                this.profile.totalTableDeleteMs += Number(deleteEnd - deleteStart) / 1_000_000;
+                fileDeleteMs += Number(deleteEnd - deleteStart) / 1_000_000;
+            }
         }
 
         // Use TreeSitterChunker
+        const chunkStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
         const chunks = await this.chunker.chunk(options.metadata?.path || "unknown", content);
+        if (PROFILE_ENABLED && chunkStart) {
+            const chunkEnd = process.hrtime.bigint();
+            this.profile.totalChunkTimeMs += Number(chunkEnd - chunkStart) / 1_000_000;
+            fileChunkMs += Number(chunkEnd - chunkStart) / 1_000_000;
+            this.profile.totalChunkCount += chunks.length;
+        }
         if (chunks.length === 0) return;
 
+        
         const texts = chunks.map(c => c.content);
+texts.forEach(t => {
+    if (t.length > 1500) console.warn(`[WARNING] Giant chunk detected: ${t.length} chars. Likely truncated!`);
+}); 
 
         const BATCH_SIZE = 16;
         const WRITE_BATCH_SIZE = 50;
@@ -245,7 +297,14 @@ export class LocalStore implements Store {
 
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
             const batchTexts = texts.slice(i, i + BATCH_SIZE);
+            const embedStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
             const batchVectors = await this.getEmbeddings(batchTexts);
+            if (PROFILE_ENABLED && embedStart) {
+                const embedEnd = process.hrtime.bigint();
+                this.profile.totalEmbedTimeMs += Number(embedEnd - embedStart) / 1_000_000;
+                fileEmbedMs += Number(embedEnd - embedStart) / 1_000_000;
+                this.profile.totalEmbedBatches += 1;
+            }
             for (let j = 0; j < batchVectors.length; j++) {
                 const chunkIndex = i + j;
                 const chunk = chunks[chunkIndex];
@@ -255,21 +314,45 @@ export class LocalStore implements Store {
                     id: uuidv4(),
                     path: options.metadata?.path || "",
                     hash: options.metadata?.hash || "",
-                    content: chunk.content,
-                    start_line: chunk.startLine,
+                    content: `File: ${options.metadata?.path}\n---\n${chunk.content}`,                    start_line: chunk.startLine,
                     end_line: chunk.endLine,
                     vector,
                 });
 
                 if (pendingWrites.length >= WRITE_BATCH_SIZE) {
+                    const writeStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
                     await table.add(pendingWrites);
+                    if (PROFILE_ENABLED && writeStart) {
+                        const writeEnd = process.hrtime.bigint();
+                        this.profile.totalTableWriteMs += Number(writeEnd - writeStart) / 1_000_000;
+                        fileWriteMs += Number(writeEnd - writeStart) / 1_000_000;
+                    }
                     pendingWrites = [];
                 }
             }
         }
 
         if (pendingWrites.length > 0) {
+            const writeStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
             await table.add(pendingWrites);
+            if (PROFILE_ENABLED && writeStart) {
+                const writeEnd = process.hrtime.bigint();
+                this.profile.totalTableWriteMs += Number(writeEnd - writeStart) / 1_000_000;
+                fileWriteMs += Number(writeEnd - writeStart) / 1_000_000;
+            }
+        }
+
+        if (PROFILE_ENABLED && fileUploadStart) {
+            const end = process.hrtime.bigint();
+            this.profile.uploadCount += 1;
+            const total = Number(end - fileUploadStart) / 1_000_000;
+            console.log(
+                `[profile] upload ${options.metadata?.path ?? "unknown"} • chunks=${
+                    chunks.length
+                } batches=${Math.ceil(texts.length / BATCH_SIZE)} ` +
+                `chunkTime=${fileChunkMs.toFixed(1)}ms embedTime=${fileEmbedMs.toFixed(1)}ms ` +
+                `deleteTime=${fileDeleteMs.toFixed(1)}ms writeTime=${fileWriteMs.toFixed(1)}ms total=${total.toFixed(1)}ms`,
+            );
         }
     }
 
@@ -314,43 +397,92 @@ export class LocalStore implements Store {
         } catch {
             return { data: [] };
         }
+
+        // 1. Setup
         const queryVector = await this.getEmbedding(this.queryPrefix + query);
-        const limit = 50; // fetch more candidates for reranking
         const finalLimit = top_k ?? 10;
-        const pathFilter =
-            (_filters as any)?.all?.find(
-                (f: any) => f?.key === "path" && f?.operator === "starts_with",
-            )?.value ?? "";
+        const candidateLimit = 50; // How many we fetch from EACH method
+
+        const pathFilter = (_filters as any)?.all?.find((f: any) => f?.key === "path" && f?.operator === "starts_with")?.value ?? "";
         const matchesFilter = (r: any) => {
             if (!pathFilter) return true;
             return typeof r.path === "string" && r.path.startsWith(pathFilter);
         };
 
-        const vectorResults = (await table
-            .search(queryVector)
-            .limit(limit)
-            .toArray()).filter(matchesFilter);
+        // 2. Parallel Retrieval: Vector + FTS
+        const [vectorResults, ftsResults] = await Promise.all([
+            // Vector Search
+            table.search(queryVector)
+                .limit(candidateLimit)
+                .toArray()
+                .then(res => res.filter(matchesFilter)),
+            
+            // FTS (Keyword) Search - Good for specific terms like "CLI" or variable names
+            table.search(query)
+                .limit(candidateLimit)
+                .toArray()
+                .then(res => res.filter(matchesFilter))
+                .catch(() => []) // Ignore if FTS index missing
+        ]);
 
-        if (vectorResults.length === 0) {
+        // 3. RRF Fusion (Combine the two lists)
+        const k = 60; // RRF Constant
+        const rrfScores = new Map<string, number>();
+        const contentMap = new Map<string, any>();
+
+        const fuse = (results: any[]) => {
+            results.forEach((r, i) => {
+                // Use path+start_line as unique key since ID might be unstable across re-indexes
+                const key = `${r.path}:${r.start_line}`; 
+                if (!contentMap.has(key)) contentMap.set(key, r);
+                
+                const rank = i + 1;
+                const score = 1 / (k + rank);
+                rrfScores.set(key, (rrfScores.get(key) || 0) + score);
+            });
+        };
+
+        fuse(vectorResults);
+        fuse(ftsResults);
+
+        // Sort by RRF Score to get the "Best of Both Worlds" candidates
+        const candidates = Array.from(rrfScores.keys())
+            .sort((a, b) => (rrfScores.get(b) || 0) - (rrfScores.get(a) || 0))
+            .slice(0, candidateLimit) // Take top 50 combined
+            .map(key => contentMap.get(key));
+
+            if (query === "CLI entry point") {
+                console.log("DEBUG: Candidates for 'CLI entry point':");
+                candidates.forEach((c, i) => console.log(`${i+1}. ${c.path} (Score: ${rrfScores.get(`${c.path}:${c.start_line}`)})`));
+            }
+
+
+        if (candidates.length === 0) {
             return { data: [] };
         }
 
-        let rerankScores: number[] | null = null;
-        try {
-            const docs = vectorResults.map((r) => String(r.content ?? ""));
-            rerankScores = await this.rerankDocuments(query, docs);
-        } catch (e) {
-            console.warn("Reranker failed; falling back to vector order:", e);
-        }
-
-        const scoredResults = vectorResults.map((r, i) => ({
+        // 4. Neural Reranking (The Brains)
+        let finalResults = candidates.map((r, _) => ({
             record: r,
-            score: rerankScores?.[i] ?? (limit - i) / limit,
+            score: rrfScores.get(`${r.path}:${r.start_line}`) || 0 // Default to RRF score
         }));
 
-        scoredResults.sort((a, b) => b.score - a.score);
+        try {
+            const docs = candidates.map((r) => String(r.content ?? ""));
+            const scores = await this.rerankDocuments(query, docs);
+            
+            // Update scores with Neural scores
+            finalResults = candidates.map((r, i) => ({
+                record: r,
+                score: scores[i]
+            }));
+        } catch (e) {
+            console.warn("Reranker failed; falling back to RRF order:", e);
+        }
 
-        const limited = scoredResults.slice(0, finalLimit);
+        // 5. Final Sort & Format
+        finalResults.sort((a, b) => b.score - a.score);
+        const limited = finalResults.slice(0, finalLimit);
 
         const chunks: ChunkType[] = limited.map(({ record, score }) => ({
             type: "text",
@@ -411,5 +543,9 @@ export class LocalStore implements Store {
                 in_progress: 0,
             },
         };
+    }
+
+    getProfile(): LocalStoreProfile {
+        return { ...this.profile };
     }
 }

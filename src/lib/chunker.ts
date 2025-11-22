@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-// fetch is available in supported Node versions
 
 // web-tree-sitter ships a CommonJS build
 const TreeSitter = require("web-tree-sitter");
@@ -11,7 +10,6 @@ const Language = TreeSitter.Language;
 const GRAMMARS_DIR = path.join(os.homedir(), ".osgrep", "grammars");
 
 const GRAMMAR_URLS: Record<string, string> = {
-    // Use "latest" to avoid pinned versions going 404
     typescript: "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-typescript.wasm",
     tsx: "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-tsx.wasm",
     python: "https://github.com/tree-sitter/tree-sitter-python/releases/latest/download/tree-sitter-python.wasm",
@@ -28,13 +26,14 @@ export class TreeSitterChunker {
     private parser: any = null;
     private languages: Map<string, any> = new Map();
     private initialized = false;
-    private readonly MAX_CHUNK_LINES = 150;
-    private readonly MAX_CHUNK_CHARS = 1500;
-    private readonly CHUNK_OVERLAP_CHARS = 200;
+    
+    // Safety Limits
+    private readonly MAX_CHUNK_LINES = 60; 
+    private readonly MAX_CHUNK_CHARS = 1500; 
+    private readonly OVERLAP_LINES = 10;
 
     async init() {
         if (this.initialized) return;
-
         try {
             await Parser.init({
                 locator: require.resolve("web-tree-sitter/tree-sitter.wasm"),
@@ -44,192 +43,156 @@ export class TreeSitterChunker {
             console.error("Falling back to paragraph chunking; tree-sitter init failed:", err);
             this.parser = null;
         }
-
         if (!fs.existsSync(GRAMMARS_DIR)) {
             fs.mkdirSync(GRAMMARS_DIR, { recursive: true });
         }
-
         this.initialized = true;
     }
 
     private async getLanguage(lang: string): Promise<any> {
         if (this.languages.has(lang)) return this.languages.get(lang)!;
-
         const wasmPath = path.join(GRAMMARS_DIR, `tree-sitter-${lang}.wasm`);
-
         if (!fs.existsSync(wasmPath)) {
             const url = GRAMMAR_URLS[lang];
-            if (!url) return null; // Not supported
-
+            if (!url) return null;
             try {
                 console.log(`Downloading grammar for ${lang}...`);
                 await this.downloadFile(url, wasmPath);
             } catch (e) {
-                console.warn(`Could not download ${lang} grammar (offline?). Falling back to paragraph chunking.`);
                 return null;
             }
         }
-
         try {
             const language = Language ? await Language.load(wasmPath) : null;
             this.languages.set(lang, language);
             return language;
         } catch (e) {
-            console.error(`Failed to load grammar for ${lang}:`, e);
             return null;
         }
     }
 
     private async downloadFile(url: string, dest: string): Promise<void> {
-        console.log(`Downloading ${path.basename(dest)}...`);
         const response = await fetch(url);
-        if (!response.ok) {
-            throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
-        }
-
+        if (!response.ok) throw new Error(`Failed to download ${url}`);
         const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-
-        // Verify WASM magic number: 00 61 73 6d
-        if (
-            buffer.length < 4 ||
-            buffer[0] !== 0x00 ||
-            buffer[1] !== 0x61 ||
-            buffer[2] !== 0x73 ||
-            buffer[3] !== 0x6d
-        ) {
-            throw new Error(`Invalid WASM header for ${url}. Likely a redirect or HTML error page.`);
-        }
-
-        fs.writeFileSync(dest, buffer);
-        console.log(`Downloaded ${path.basename(dest)} (${buffer.length} bytes)`);
+        fs.writeFileSync(dest, Buffer.from(arrayBuffer));
     }
 
     async chunk(filePath: string, content: string): Promise<Chunk[]> {
         if (!this.initialized) await this.init();
-        if (!this.parser) return this.fallbackChunk(content);
+        
+        // Step 1: Try TreeSitter for structural understanding
+        let rawChunks: Chunk[] = [];
+        if (this.parser) {
+            try {
+                rawChunks = await this.chunkWithTreeSitter(filePath, content);
+            } catch (e) {
+                // Fallback silently
+            }
+        }
 
+        // Step 2: If TreeSitter failed or yielded nothing, use Text Fallback
+        if (rawChunks.length === 0) {
+            rawChunks = this.fallbackChunk(content);
+        }
+
+        // Step 3: Post-process "Giant Chunks" (The Safety Net)
+        // This ensures NO giant function makes it to the model
+        return rawChunks.flatMap(chunk => this.splitIfTooBig(chunk));
+    }
+
+    private async chunkWithTreeSitter(filePath: string, content: string): Promise<Chunk[]> {
         const ext = path.extname(filePath).toLowerCase();
         let lang = "";
         if (ext === ".ts") lang = "typescript";
         else if (ext === ".tsx") lang = "tsx";
         else if (ext === ".py") lang = "python";
-
-        if (!lang) return this.fallbackChunk(content);
+        if (!lang) return [];
 
         const language = await this.getLanguage(lang);
-        if (!language) return this.fallbackChunk(content);
+        if (!language) return [];
 
         this.parser.setLanguage(language);
         const tree = this.parser.parse(content);
-
         const chunks: Chunk[] = [];
 
-        const targetTypes = new Set([
-            "function_declaration",
-            "function_definition",
-            "method_definition",
-            "class_declaration",
-            "class_definition",
-        ]);
-
+        // Flatten the logic: Just get top-level or near-top-level blocks
         const visit = (node: any) => {
-            if (targetTypes.has(node.type)) {
-                const chunkType: Chunk["type"] = node.type.includes("class") ? "class" : "function";
-                const commentNode = this.getLeadingComment(node);
-                const leadingText = commentNode ? `${commentNode.text}\n` : "";
-                const startLine = commentNode ? commentNode.startPosition.row : node.startPosition.row;
+            // If we found a function/class, capture it
+            if ([
+                "function_declaration", "function_definition",
+                "method_definition", "class_declaration",
+                "class_definition",
+            ].includes(node.type)) {
                 chunks.push({
-                    content: `${leadingText}${node.text}`,
-                    startLine,
+                    content: node.text,
+                    startLine: node.startPosition.row,
                     endLine: node.endPosition.row,
-                    type: chunkType,
+                    type: node.type.includes("class") ? "class" : "function"
                 });
+                return; // Don't recurse into this function (we handle splitting later)
             }
 
-            const children = node.namedChildren ?? node.children ?? [];
-            for (const child of children) {
-                visit(child);
+            // Otherwise, keep looking
+            if (node.namedChildren) {
+                for (const child of node.namedChildren) {
+                    visit(child);
+                }
             }
         };
 
         visit(tree.rootNode);
-
-        // If no chunks found (e.g. file with just imports or small code), fallback
-        if (chunks.length === 0) return this.fallbackChunk(content);
-
-        return chunks.flatMap((chunk) => this.capChunk(chunk));
-    }
-
-    private fallbackChunk(content: string): Chunk[] {
-        // Paragraph split
-        const paragraphs = content.split(/\n\s*\n/);
-        const chunks: Chunk[] = [];
-        let lineOffset = 0;
-
-        for (const p of paragraphs) {
-            if (!p.trim()) {
-                lineOffset += p.split("\n").length;
-                continue;
-            }
-            const numLines = p.split("\n").length;
-            const chunk: Chunk = {
-                content: p,
-                startLine: lineOffset,
-                endLine: lineOffset + numLines,
-                type: 'block'
-            };
-            chunks.push(...this.capChunk(chunk));
-            lineOffset += numLines;
-        }
         return chunks;
     }
 
-    private capChunk(chunk: Chunk): Chunk[] {
-        const lines = chunk.content.split("\n");
-        if (lines.length <= this.MAX_CHUNK_LINES && chunk.content.length <= this.MAX_CHUNK_CHARS) {
+    // Force split anything that exceeds our limits
+    private splitIfTooBig(chunk: Chunk): Chunk[] {
+        const lineCount = chunk.endLine - chunk.startLine;
+        const charCount = chunk.content.length;
+
+        if (lineCount <= this.MAX_CHUNK_LINES && charCount <= this.MAX_CHUNK_CHARS) {
             return [chunk];
         }
 
-        const segments: Chunk[] = [];
-        const maxChars = this.MAX_CHUNK_CHARS;
-        const overlap = this.CHUNK_OVERLAP_CHARS;
-        let offset = 0;
-        let startLine = chunk.startLine;
+        // It's too big. Slice it up using sliding windows.
+        const subChunks: Chunk[] = [];
+        const lines = chunk.content.split('\n');
+        
+        // Stride = Window - Overlap
+        const stride = Math.max(1, this.MAX_CHUNK_LINES - this.OVERLAP_LINES);
 
-        while (offset < chunk.content.length) {
-            const end = Math.min(chunk.content.length, offset + maxChars);
-            const slice = chunk.content.slice(offset, end);
-            const sliceLineCount = slice.split("\n").length;
+        for (let i = 0; i < lines.length; i += stride) {
+            const end = Math.min(i + this.MAX_CHUNK_LINES, lines.length);
+            const subLines = lines.slice(i, end);
+            
+            // Don't create tiny fragments at the end
+            if (subLines.length < 3 && i > 0) continue;
 
-            segments.push({
-                ...chunk,
-                content: slice,
-                startLine,
-                endLine: startLine + sliceLineCount,
+            const subContent = subLines.join('\n');
+            subChunks.push({
+                content: subContent,
+                startLine: chunk.startLine + i,
+                endLine: chunk.startLine + end,
+                type: chunk.type
             });
-
-            if (end >= chunk.content.length) break;
-
-            const overlapText = slice.slice(Math.max(0, slice.length - overlap));
-            const overlapLines = Math.max(0, overlapText.split("\n").length - 1);
-            offset += maxChars - overlap;
-            startLine += sliceLineCount - overlapLines;
         }
-
-        return segments;
+        return subChunks;
     }
 
-    private getLeadingComment(node: any): any | null {
-        let sibling = node.previousSibling;
-        while (sibling && typeof sibling.text === "string" && sibling.text.trim() === "") {
-            sibling = sibling.previousSibling;
+    private fallbackChunk(content: string): Chunk[] {
+        const lines = content.split("\n");
+        const chunks: Chunk[] = [];
+        const stride = this.MAX_CHUNK_LINES - this.OVERLAP_LINES;
+        
+        for (let i = 0; i < lines.length; i += stride) {
+            const end = Math.min(i + this.MAX_CHUNK_LINES, lines.length);
+            chunks.push({
+                content: lines.slice(i, end).join("\n"),
+                startLine: i,
+                endLine: end,
+                type: "block"
+            });
         }
-        if (!sibling) return null;
-        const commentTypes = new Set(["comment", "comment_block", "string_literal", "string"]);
-        if (commentTypes.has(sibling.type)) {
-            return sibling;
-        }
-        return null;
+        return chunks;
     }
 }

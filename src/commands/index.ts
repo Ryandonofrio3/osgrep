@@ -7,6 +7,9 @@ import {
 } from "../lib/sync-helpers";
 import { initialSync, MetaStore } from "../utils";
 
+const PROFILE_ENABLED =
+  process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
+
 export const index = new Command("index")
   .description("Index the current directory and create searchable store")
   .option(
@@ -26,7 +29,7 @@ export const index = new Command("index")
     try {
       const store = await createStore();
       const fileSystem = createFileSystem({
-        ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc"],
+        ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb"],
       });
       const indexRoot = options.path || process.cwd();
       const metaStore = new MetaStore();
@@ -58,6 +61,12 @@ export const index = new Command("index")
           spinner.succeed(
             `Dry run complete (${result.processed}/${result.total}) • would have uploaded ${result.uploaded}`,
           );
+          if (
+            PROFILE_ENABLED &&
+            typeof (store as any).getProfile === "function"
+          ) {
+            console.log("[profile] local store:", (store as any).getProfile());
+          }
           console.log(
             formatDryRunSummary(result, {
               actionDescription: "would have indexed",
@@ -80,6 +89,12 @@ export const index = new Command("index")
         spinner.succeed(
           `Indexing complete (${result.processed}/${result.total}) • uploaded ${result.uploaded}`,
         );
+        if (
+          PROFILE_ENABLED &&
+          typeof (store as any).getProfile === "function"
+        ) {
+          console.log("[profile] local store:", (store as any).getProfile());
+        }
       } catch (e) {
         spinner.fail("Indexing failed");
         throw e;
@@ -90,4 +105,3 @@ export const index = new Command("index")
       process.exitCode = 1;
     }
   });
-

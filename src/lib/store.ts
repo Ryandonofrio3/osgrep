@@ -129,4 +129,9 @@ export interface Store {
    * Delete a file and its chunks
    */
   deleteFile(storeId: string, filePath: string): Promise<void>;
+
+  /**
+   * Optional profiling data for implementations that support it
+   */
+  getProfile?(): unknown;
 }

@@ -24,7 +24,7 @@ export const watch = new Command("watch")
     try {
       const store = await createStore();
       const fileSystem = createFileSystem({
-        ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc"],
+        ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb"],
       });
       const watchRoot = process.cwd();
       const metaStore = new MetaStore();

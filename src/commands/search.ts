@@ -187,7 +187,7 @@ export const search: Command = new CommanderCommand("search")
 
       if (options.sync) {
         const fileSystem = createFileSystem({
-          ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc"],
+          ignorePatterns: ["*.lock", "*.bin", "*.ipynb", "*.pyc", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb"],
         });
         const metaStore = new MetaStore();
         const { spinner, onProgress } = createIndexingSpinner(root);

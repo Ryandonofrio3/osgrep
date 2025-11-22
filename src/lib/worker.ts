@@ -15,10 +15,10 @@ env.allowRemoteModels = false;
 class EmbeddingWorker {
     private embedPipe: any = null;
     private rerankPipe: any = null;
-    private embedModelId = "mixedbread-ai/mxbai-embed-large-v1";
+    private embedModelId = "mixedbread-ai/mxbai-embed-xsmall-v1";
     private rerankModelId = "mixedbread-ai/mxbai-rerank-xsmall-v1";
-    private readonly TARGET_DIMENSIONS = 512;
-
+    private readonly TARGET_DIMENSIONS = 384;
+    
     private async loadPipeline(task: PipelineType, model: string, options: Record<string, any>) {
         try {
             return await pipeline(task, model, options);

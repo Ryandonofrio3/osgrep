@@ -12,7 +12,7 @@ to use osgrep in your day‑to‑day work, read on.
 ## TL;DR
 
 ```bash
-npm install -g osgrep    # or pnpm / bun
+npm install -g @ryandonofrio/osgrep    # or pnpm / bun
 ```
 
 ### Manual usage

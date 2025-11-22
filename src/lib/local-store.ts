@@ -267,12 +267,35 @@ export class LocalStore implements Store {
     async createVectorIndex(storeId: string): Promise<void> {
         const table = await this.getTable(storeId);
         try {
+            // Try to create an optimized IVF_PQ index (requires 256+ chunks)
             await table.createIndex("vector", { type: "ivf_pq" } as any);
         } catch (e) {
-            try {
-                await table.createIndex("vector");
-            } catch (fallbackError) {
-                console.warn("Failed to create vector index (might already exist):", e || fallbackError);
+            // Check if it's the "not enough rows" error - this is expected for small repos
+            const errorMessage = e instanceof Error ? e.message : String(e);
+            const isNotEnoughRows = errorMessage.includes("Not enough rows to train PQ") || 
+                                   errorMessage.includes("Requires 256 rows");
+            
+            if (isNotEnoughRows) {
+                // Silently fall back to a simpler index for small repos
+                try {
+                    await table.createIndex("vector");
+                } catch (fallbackError) {
+                    // Only warn if both attempts failed for a different reason
+                    const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+                    if (!fallbackMsg.includes("already exists")) {
+                        console.warn("Note: Using basic vector index (repo has < 256 chunks). Performance will improve as you add more files.");
+                    }
+                }
+            } else {
+                // For other errors, try the simple index and warn if that fails too
+                try {
+                    await table.createIndex("vector");
+                } catch (fallbackError) {
+                    const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+                    if (!fallbackMsg.includes("already exists")) {
+                        console.warn("Failed to create vector index:", fallbackError);
+                    }
+                }
             }
         }
     }

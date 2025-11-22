@@ -41,8 +41,8 @@ osgrep "where do we set up auth?"
    ```
    Searches default to the current working directory unless you pass a path.
 
-**Today, `osgrep` works great on:** code, text, PDFs, images.  
-**Coming soon:** audio & video.
+Today, osgrep works great on: code and text documents.  
+**Coming soon:** PDFs, images, audio, and video.
 
 ## Using it with Coding Agents
 

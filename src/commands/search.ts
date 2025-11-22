@@ -1,4 +1,4 @@
-import { join, normalize } from "node:path";
+import { join, normalize, extname } from "node:path";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
 import { createFileSystem, createStore } from "../lib/context";
@@ -14,6 +14,33 @@ import {
   formatDryRunSummary,
 } from "../lib/sync-helpers";
 import { initialSync, MetaStore } from "../utils";
+
+function detectLanguage(filePath: string): string {
+  const ext = extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".ts":
+    case ".tsx":
+      return "typescript";
+    case ".js":
+    case ".jsx":
+      return "javascript";
+    case ".py":
+      return "python";
+    case ".rs":
+      return "rust";
+    case ".go":
+      return "go";
+    case ".json":
+      return "json";
+    case ".md":
+      return "markdown";
+    case ".yml":
+    case ".yaml":
+      return "yaml";
+    default:
+      return "plaintext";
+  }
+}
 
 function extractSources(response: AskResponse): { [key: number]: ChunkType } {
   const sources: { [key: number]: ChunkType } = {};
@@ -71,8 +98,8 @@ function formatSearchResponse(response: SearchResponse, show_content: boolean) {
 
 function formatChunk(chunk: ChunkType, show_content: boolean) {
   const pwd = process.cwd();
-  const path =
-    (chunk.metadata as FileMetadata)?.path?.replace(pwd, "") ?? "Unknown path";
+  const filePath = (chunk.metadata as FileMetadata)?.path || "";
+  const path = filePath.replace(pwd, "") || "Unknown path";
   let line_range = "";
   let content = "";
   switch (chunk.type) {
@@ -83,10 +110,15 @@ function formatChunk(chunk: ChunkType, show_content: boolean) {
       line_range = `:${start_line}-${end_line}`;
       content = show_content ? (chunk.text ?? "") : "";
       if (show_content && content) {
-        content = highlight(content, {
-          language: "typescript",
-          ignoreIllegals: true,
-        });
+        const lang = detectLanguage(filePath);
+        try {
+          content = highlight(content, {
+            language: lang,
+            ignoreIllegals: true,
+          });
+        } catch (_err) {
+          content = chunk.text ?? "";
+        }
       }
       break;
     }

@@ -57,8 +57,13 @@ export class TreeSitterChunker {
             const url = GRAMMAR_URLS[lang];
             if (!url) return null; // Not supported
 
-            console.log(`Downloading grammar for ${lang}...`);
-            await this.downloadFile(url, wasmPath);
+            try {
+                console.log(`Downloading grammar for ${lang}...`);
+                await this.downloadFile(url, wasmPath);
+            } catch (e) {
+                console.warn(`Could not download ${lang} grammar (offline?). Falling back to paragraph chunking.`);
+                return null;
+            }
         }
 
         try {

@@ -5,6 +5,7 @@ import { program } from "commander";
 import { search } from "./commands/search";
 import { watch } from "./commands/watch";
 import { installClaudeCode } from "./install/claude-code";
+import { doctor } from "./commands/doctor";
 
 // utility functions moved to ./utils
 
@@ -25,5 +26,6 @@ program
 program.addCommand(search, { isDefault: true });
 program.addCommand(watch);
 program.addCommand(installClaudeCode);
+program.addCommand(doctor);
 
 program.parse();

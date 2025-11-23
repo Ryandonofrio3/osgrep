@@ -99,69 +99,109 @@ export class LocalStore implements Store {
     return await db.openTable(storeId);
   }
 
-  private async fetchNeighborChunk(
+  private async batchExpandWithNeighbors(
     table: lancedb.Table,
-    path: string,
-    chunkIndex: number,
-  ): Promise<VectorRecord | null> {
-    const safePath = path.replace(/'/g, "''");
-    try {
-      const res = (await table
-        .query()
-        .filter(`path = '${safePath}' AND chunk_index = ${chunkIndex}`)
-        .limit(1)
-        .toArray()) as VectorRecord[];
-      return res[0] ?? null;
-    } catch {
-      return null;
-    }
-  }
+    records: VectorRecord[],
+  ): Promise<VectorRecord[]> {
+    const neighborIndexMap = new Map<string, Set<number>>();
 
-  private async expandWithNeighbors(
-    table: lancedb.Table,
-    record: VectorRecord,
-  ): Promise<VectorRecord> {
-    const centerIndex =
-      typeof record.chunk_index === "number" ? record.chunk_index : null;
-    if (centerIndex === null || typeof record.path !== "string") return record;
+    records.forEach((record) => {
+      const centerIndex =
+        typeof record.chunk_index === "number" ? record.chunk_index : null;
+      if (centerIndex === null || typeof record.path !== "string") return;
 
-    const neighborIndices = [centerIndex - 1, centerIndex + 1].filter(
-      (i) => i >= 0,
-    );
-    const neighbors: VectorRecord[] = [];
-    for (const idx of neighborIndices) {
-      const neighbor = await this.fetchNeighborChunk(
-        table,
-        record.path,
-        idx,
+      const neighborIndices = [centerIndex - 1, centerIndex + 1].filter(
+        (i) => i >= 0,
       );
-      if (neighbor) neighbors.push(neighbor);
-    }
+      if (neighborIndices.length === 0) return;
 
-    if (neighbors.length === 0) return record;
-
-    const ordered = [...neighbors, record].sort((a, b) => {
-      const ai = typeof a.chunk_index === "number" ? a.chunk_index : 0;
-      const bi = typeof b.chunk_index === "number" ? b.chunk_index : 0;
-      return ai - bi;
+      const safePath = record.path.replace(/'/g, "''");
+      if (!neighborIndexMap.has(safePath)) {
+        neighborIndexMap.set(safePath, new Set());
+      }
+      const indexSet = neighborIndexMap.get(safePath);
+      neighborIndices.forEach((idx) => indexSet?.add(idx));
     });
 
-    const combinedContent = ordered
-      .map((r) => String(r.content ?? ""))
-      .join("\n\n");
-    const startLine = Math.min(
-      ...ordered.map((r) => (r.start_line as number) ?? record.start_line ?? 0),
-    );
-    const endLine = Math.max(
-      ...ordered.map((r) => (r.end_line as number) ?? record.end_line ?? 0),
-    );
+    if (neighborIndexMap.size === 0) {
+      return records;
+    }
 
-    return {
-      ...record,
-      content: combinedContent,
-      start_line: startLine,
-      end_line: endLine,
-    };
+    // Build a single OR filter combining all path/index needs
+    const clauses: string[] = [];
+    for (const [safePath, indices] of neighborIndexMap.entries()) {
+      const idxList = Array.from(indices).sort((a, b) => a - b);
+      if (idxList.length === 0) continue;
+      const indexClause = idxList.join(",");
+      clauses.push(`(path = '${safePath}' AND chunk_index IN (${indexClause}))`);
+    }
+
+    if (clauses.length === 0) {
+      return records;
+    }
+
+    const neighborFilter = clauses.join(" OR ");
+    let neighbors: VectorRecord[] = [];
+    try {
+      neighbors = (await table
+        .query()
+        .filter(neighborFilter)
+        .toArray()) as VectorRecord[];
+    } catch {
+      return records;
+    }
+
+    const neighborMap = new Map<string, VectorRecord>();
+    neighbors.forEach((neighbor) => {
+      if (
+        typeof neighbor.path === "string" &&
+        typeof neighbor.chunk_index === "number"
+      ) {
+        neighborMap.set(
+          `${neighbor.path.replace(/'/g, "''")}:${neighbor.chunk_index}`,
+          neighbor,
+        );
+      }
+    });
+
+    return records.map((record) => {
+      const centerIndex =
+        typeof record.chunk_index === "number" ? record.chunk_index : null;
+      if (centerIndex === null || typeof record.path !== "string") return record;
+
+      const pathKey = record.path.replace(/'/g, "''");
+      const neighborRecords = [centerIndex - 1, centerIndex + 1]
+        .filter((i) => i >= 0)
+        .map((idx) => neighborMap.get(`${pathKey}:${idx}`))
+        .filter((n): n is VectorRecord => Boolean(n));
+
+      if (neighborRecords.length === 0) return record;
+
+      const ordered = [...neighborRecords, record].sort((a, b) => {
+        const ai = typeof a.chunk_index === "number" ? a.chunk_index : 0;
+        const bi = typeof b.chunk_index === "number" ? b.chunk_index : 0;
+        return ai - bi;
+      });
+
+      const combinedContent = ordered
+        .map((r) => String(r.content ?? ""))
+        .join("\n\n");
+      const startLine = Math.min(
+        ...ordered.map(
+          (r) => (r.start_line as number) ?? record.start_line ?? 0,
+        ),
+      );
+      const endLine = Math.max(
+        ...ordered.map((r) => (r.end_line as number) ?? record.end_line ?? 0),
+      );
+
+      return {
+        ...record,
+        content: combinedContent,
+        start_line: startLine,
+        end_line: endLine,
+      };
+    });
   }
 
   private baseSchemaRow(): VectorRecord {
@@ -546,13 +586,12 @@ export class LocalStore implements Store {
     finalResults.sort((a, b) => b.score - a.score);
     const limited = finalResults.slice(0, finalLimit);
 
-    const expanded = await Promise.all(
-      limited.map(async ({ record, score }) => {
-        const withNeighbors = await this.expandWithNeighbors(table, record);
-        return { record: withNeighbors, score };
-      }),
+    const expandedRecords = await this.batchExpandWithNeighbors(
+      table,
+      limited.map(({ record }) => record),
     );
-    const chunks: ChunkType[] = expanded.map(({ record, score }) => {
+    const chunks: ChunkType[] = expandedRecords.map((record, idx) => {
+      const score = limited[idx]?.score ?? 0;
       const startLine = (record.start_line as number) ?? 0;
       const endLine = (record.end_line as number) ?? startLine;
       return {
@@ -566,7 +605,7 @@ export class LocalStore implements Store {
         },
         generated_metadata: {
           start_line: startLine,
-          num_lines: endLine - startLine,
+          num_lines: Math.max(1, endLine - startLine + 1),
         },
       };
     });

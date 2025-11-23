@@ -72,7 +72,7 @@ async function runSearchWithFakeStore({
           })
         : vi.fn(async () => rerankScores),
     },
-    expandWithNeighbors: vi.fn(async (_table, record) => record),
+    batchExpandWithNeighbors: vi.fn(async (_table, records) => records),
   };
 
   const searchFn = LocalStore.prototype.search;

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { LocalStore } from "./lib/local-store";
+import { LocalStore } from "../lib/local-store";
 
 type BenchmarkCase = {
   query: string;

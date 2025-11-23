@@ -13,5 +13,6 @@ run-agent-benchmark.sh
 setup-benchmark-repos.sh
 AGENT_BENCHMARK.md
 benchmark-results.json
-src/benchmark-agent.ts
-src/generate-benchmark-chart.ts
+src/bench/benchmark-agent.ts
+src/bench/generate-benchmark-chart.ts
+src/.env.local

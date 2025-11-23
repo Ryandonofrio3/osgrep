@@ -15,6 +15,11 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { join } from 'path';
 import chalk from 'chalk';
+import fs from 'fs';
+import { config } from 'dotenv';
+config({ path: '.env.local' });
+
+
 
 interface BenchmarkResult {
 	duration_ms: number;
@@ -27,6 +32,8 @@ interface BenchmarkResult {
 	files_read: number;
 	grep_calls: number;
 	bash_calls: number;
+	read_bytes: number;
+	estimated_read_tokens: number;
 	result: string;
 	error?: string;
 }
@@ -51,6 +58,7 @@ async function runTest(
 	let filesRead = 0;
 	let grepCalls = 0;
 	let bashCalls = 0;
+	let readBytes = 0;
 
 	try {
 		// Build a detailed system prompt that encourages thorough searching
@@ -142,6 +150,22 @@ Be thorough and cite specific files and code.`;
 							
 							if (toolName === 'Read') {
 								filesRead++;
+								// Approximate how many tokens were consumed by reading files:
+								// use file byte size as a proxy (avg 4 chars per token).
+								const pathInput =
+									typeof block.input === 'object' && block.input !== null
+										? (block.input as { path?: string }).path
+										: undefined;
+								if (pathInput && typeof pathInput === 'string') {
+									try {
+										const stat = fs.statSync(pathInput);
+										if (stat.isFile()) {
+											readBytes += stat.size;
+										}
+									} catch {
+										// Ignore missing files / stat errors
+									}
+								}
 								process.stdout.write(chalk.dim('.'));
 							} else if (toolName === 'Bash') {
 								bashCalls++;
@@ -184,6 +208,8 @@ Be thorough and cite specific files and code.`;
 			files_read: filesRead,
 			grep_calls: grepCalls,
 			bash_calls: bashCalls,
+			read_bytes: readBytes,
+			estimated_read_tokens: Math.ceil(readBytes / 4),
 			result: resultText
 		};
 	} catch (error) {
@@ -196,6 +222,8 @@ Be thorough and cite specific files and code.`;
 			files_read: 0,
 			grep_calls: 0,
 			bash_calls: 0,
+			read_bytes: 0,
+			estimated_read_tokens: 0,
 			result: '',
 			error: error instanceof Error ? error.message : String(error)
 		};
@@ -264,10 +292,14 @@ function displayResults(comparison: BenchmarkComparison): void {
 
 	// Calculate improvements
 	const timeImprovement = without.duration_ms / with_.duration_ms;
-	const costSavings = ((without.cost_usd - with_.cost_usd) / without.cost_usd) * 100;
-	const tokenReduction = ((without.input_tokens - with_.input_tokens) / without.input_tokens) * 100;
-	const toolCallReduction = ((without.tool_calls - with_.tool_calls) / without.tool_calls) * 100;
-	const fileReadReduction = ((without.files_read - with_.files_read) / without.files_read) * 100;
+	const costSavings = percentDelta(without.cost_usd, with_.cost_usd);
+	const tokenReduction = percentDelta(without.input_tokens, with_.input_tokens);
+	const readTokenReduction = percentDelta(
+		without.estimated_read_tokens,
+		with_.estimated_read_tokens
+	);
+	const toolCallReduction = percentDelta(without.tool_calls, with_.tool_calls);
+	const fileReadReduction = percentDelta(without.files_read, with_.files_read);
 
 	// Create comparison table
 	console.log('\n┌─────────────────────┬──────────────┬──────────────┬─────────────┐');
@@ -278,6 +310,7 @@ function displayResults(comparison: BenchmarkComparison): void {
 	console.log(`│ Time                │ ${formatDuration(without.duration_ms).padEnd(12)} │ ${formatDuration(with_.duration_ms).padEnd(12)} │ ${formatImprovement(timeImprovement, 'x faster').padEnd(11)} │`);
 	console.log(`│ Cost                │ ${formatCost(without.cost_usd).padEnd(12)} │ ${formatCost(with_.cost_usd).padEnd(12)} │ ${formatPercent(costSavings, 'cheaper').padEnd(11)} │`);
 	console.log(`│ Input Tokens        │ ${formatNumber(without.input_tokens).padEnd(12)} │ ${formatNumber(with_.input_tokens).padEnd(12)} │ ${formatPercent(tokenReduction, 'less').padEnd(11)} │`);
+	console.log(`│ Read Tokens (est)   │ ${formatNumber(without.estimated_read_tokens).padEnd(12)} │ ${formatNumber(with_.estimated_read_tokens).padEnd(12)} │ ${formatPercent(readTokenReduction, 'less').padEnd(11)} │`);
 	console.log(`│ Output Tokens       │ ${formatNumber(without.output_tokens).padEnd(12)} │ ${formatNumber(with_.output_tokens).padEnd(12)} │ ${formatDiff(without.output_tokens, with_.output_tokens).padEnd(11)} │`);
 	console.log(`│ Tool Calls (Total)  │ ${formatNumber(without.tool_calls).padEnd(12)} │ ${formatNumber(with_.tool_calls).padEnd(12)} │ ${formatPercent(toolCallReduction, 'less').padEnd(11)} │`);
 	console.log(`│ Files Read          │ ${formatNumber(without.files_read).padEnd(12)} │ ${formatNumber(with_.files_read).padEnd(12)} │ ${formatPercent(fileReadReduction, 'less').padEnd(11)} │`);
@@ -304,6 +337,9 @@ function displayResults(comparison: BenchmarkComparison): void {
 	if (tokenReduction > 50) {
 		console.log(chalk.green(`✓ osgrep reduces input tokens by ${tokenReduction.toFixed(0)}%`));
 	}
+	if (readTokenReduction > 50) {
+		console.log(chalk.green(`✓ osgrep cuts read tokens by ${readTokenReduction.toFixed(0)}%`));
+	}
 
 	console.log(chalk.dim('─'.repeat(60)));
 }
@@ -326,7 +362,7 @@ function formatImprovement(ratio: number, suffix: string): string {
 }
 
 function formatPercent(percent: number, suffix: string): string {
-	if (percent < 0) return 'N/A';
+	if (!Number.isFinite(percent)) return 'N/A';
 	return `${percent.toFixed(0)}% ${suffix}`;
 }
 
@@ -334,6 +370,11 @@ function formatDiff(before: number, after: number): string {
 	const diff = ((after - before) / before) * 100;
 	if (Math.abs(diff) < 1) return 'similar';
 	return diff > 0 ? `+${diff.toFixed(0)}%` : `${diff.toFixed(0)}%`;
+}
+
+function percentDelta(before: number, after: number): number {
+	if (before === 0) return NaN;
+	return ((before - after) / before) * 100;
 }
 
 // Main execution
@@ -402,4 +443,3 @@ if (require.main === module) {
 }
 
 export { runBenchmark, displayResults, saveResults };
-

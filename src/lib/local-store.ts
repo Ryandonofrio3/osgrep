@@ -5,7 +5,7 @@ import { Worker } from "node:worker_threads";
 import * as lancedb from "@lancedb/lancedb";
 import { v4 as uuidv4 } from "uuid";
 import type {
-  AskResponse,
+  
   ChunkType,
   CreateStoreOptions,
   IndexFileOptions,
@@ -985,24 +985,6 @@ export class LocalStore implements Store {
     const table = await this.getTable(storeId);
     const safePath = filePath.replace(/'/g, "''");
     await table.delete(`path = '${safePath}'`);
-  }
-
-  async ask(
-    storeId: string,
-    question: string,
-    top_k?: number,
-    _search_options?: { rerank?: boolean },
-    _filters?: SearchFilter,
-  ): Promise<AskResponse> {
-    // Basic RAG implementation
-    const searchRes = await this.search(storeId, question, top_k);
-    const context = searchRes.data.map((c) => c.text).join("\n\n");
-
-    // For now, just return the context as the answer since we don't have an LLM connected yet
-    return {
-      answer: "I found the following relevant code:\n\n" + context,
-      sources: searchRes.data,
-    };
   }
 
   async getInfo(storeId: string): Promise<StoreInfo> {

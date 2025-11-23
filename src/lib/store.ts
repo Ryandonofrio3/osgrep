@@ -107,17 +107,6 @@ export interface Store {
   create(options: CreateStoreOptions): Promise<unknown>;
 
   /**
-   * Ask a question to a store
-   */
-  ask(
-    storeId: string,
-    question: string,
-    top_k?: number,
-    search_options?: { rerank?: boolean },
-    filters?: SearchFilter,
-  ): Promise<AskResponse>;
-
-  /**
    * Get store information
    */
   getInfo(storeId: string): Promise<StoreInfo>;

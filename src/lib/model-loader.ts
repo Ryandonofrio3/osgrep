@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { env, pipeline } from "@huggingface/transformers";
+import { MODEL_IDS } from "../config";
 
 const HOMEDIR = os.homedir();
 const CACHE_DIR = path.join(HOMEDIR, ".osgrep", "models");
@@ -19,8 +20,8 @@ export async function downloadModels(): Promise<void> {
   env.allowLocalModels = true;
   env.allowRemoteModels = true; // Enable remote for downloading
 
-  const embedModelId = "mixedbread-ai/mxbai-embed-xsmall-v1";
-  const rerankModelId = "mixedbread-ai/mxbai-rerank-xsmall-v1";
+  const embedModelId = MODEL_IDS.embed;
+  const rerankModelId = MODEL_IDS.rerank;
 
   console.log(`Worker: Loading models from ${CACHE_DIR}...`);
 
@@ -71,16 +72,8 @@ export async function downloadModels(): Promise<void> {
  */
 export function areModelsDownloaded(): boolean {
   const fs = require("node:fs");
-  const embedModelPath = path.join(
-    CACHE_DIR,
-    "mixedbread-ai",
-    "mxbai-embed-xsmall-v1",
-  );
-  const rerankModelPath = path.join(
-    CACHE_DIR,
-    "mixedbread-ai",
-    "mxbai-rerank-xsmall-v1",
-  );
+  const embedModelPath = path.join(CACHE_DIR, ...MODEL_IDS.embed.split("/"));
+  const rerankModelPath = path.join(CACHE_DIR, ...MODEL_IDS.rerank.split("/"));
 
   return fs.existsSync(embedModelPath) && fs.existsSync(rerankModelPath);
 }

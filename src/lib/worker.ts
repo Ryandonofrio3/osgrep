@@ -2,6 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parentPort } from "node:worker_threads";
 import { env, type PipelineType, pipeline } from "@huggingface/transformers";
+import { MODEL_IDS } from "../config";
 
 // Configure cache directory
 const HOMEDIR = os.homedir();
@@ -41,8 +42,8 @@ type RerankPipeline = (
 class EmbeddingWorker {
   private embedPipe: EmbedPipeline | null = null;
   private rerankPipe: RerankPipeline | null = null;
-  private embedModelId = "mixedbread-ai/mxbai-embed-xsmall-v1";
-  private rerankModelId = "mixedbread-ai/mxbai-rerank-xsmall-v1";
+  private embedModelId = MODEL_IDS.embed;
+  private rerankModelId = MODEL_IDS.rerank;
   private readonly TARGET_DIMENSIONS = 384;
 
   private async loadPipeline<T extends EmbedPipeline | RerankPipeline>(

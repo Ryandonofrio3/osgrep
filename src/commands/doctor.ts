@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Command } from "commander";
+import { MODEL_IDS } from "../config";
 
 export const doctor = new Command("doctor")
   .description("Check osgrep health and paths")
@@ -13,10 +14,7 @@ export const doctor = new Command("doctor")
     const models = path.join(root, "models");
     const data = path.join(root, "data");
     const grammars = path.join(root, "grammars");
-    const modelIds = [
-      "mixedbread-ai/mxbai-embed-xsmall-v1",
-      "mixedbread-ai/mxbai-rerank-xsmall-v1",
-    ];
+    const modelIds = [MODEL_IDS.embed, MODEL_IDS.rerank];
 
     const checkDir = (name: string, p: string) => {
       const exists = fs.existsSync(p);

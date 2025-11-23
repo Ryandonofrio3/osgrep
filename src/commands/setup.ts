@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Command } from "commander";
 import { ensureSetup } from "../lib/setup-helpers";
+import { MODEL_IDS } from "../config";
 
 export const setup = new Command("setup")
   .description("One-time setup: download models and prepare osgrep")
@@ -28,10 +29,7 @@ export const setup = new Command("setup")
     // Show final status
     console.log("\nSetup Complete!\n");
 
-    const modelIds = [
-      "mixedbread-ai/mxbai-embed-xsmall-v1",
-      "mixedbread-ai/mxbai-rerank-xsmall-v1",
-    ];
+    const modelIds = [MODEL_IDS.embed, MODEL_IDS.rerank];
 
     const checkDir = (name: string, p: string) => {
       const exists = fs.existsSync(p);

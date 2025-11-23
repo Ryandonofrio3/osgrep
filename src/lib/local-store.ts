@@ -5,7 +5,6 @@ import { Worker } from "node:worker_threads";
 import * as lancedb from "@lancedb/lancedb";
 import { v4 as uuidv4 } from "uuid";
 import type {
-  
   ChunkType,
   CreateStoreOptions,
   IndexFileOptions,
@@ -15,6 +14,9 @@ import type {
   StoreFile,
   StoreInfo,
 } from "./store";
+import { type Chunk, TreeSitterChunker } from "./chunker";
+import { LRUCache } from "./lru";
+import { VECTOR_CACHE_MAX, WORKER_TIMEOUT_MS } from "../config";
 
 type WorkerRequest =
   | { id: string; text: string }
@@ -35,7 +37,6 @@ type VectorRecord = {
   is_anchor?: boolean;
 } & Record<string, unknown>;
 
-import { type Chunk, TreeSitterChunker } from "./chunker";
 type ChunkWithContext = Chunk & {
   context: string[];
   chunkIndex?: number;
@@ -47,18 +48,9 @@ type PendingRequest = {
   payload: WorkerRequest;
   timeoutId?: NodeJS.Timeout;
 };
-import { LRUCache } from "./lru";
 
 const PROFILE_ENABLED =
   process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
-const VECTOR_CACHE_MAX = Number.parseInt(
-  process.env.OSGREP_VECTOR_CACHE_MAX || "10000",
-  10,
-);
-const WORKER_TIMEOUT_MS = Number.parseInt(
-  process.env.OSGREP_WORKER_TIMEOUT_MS || "60000",
-  10,
-);
 
 export interface LocalStoreProfile {
   listFilesMs: number;

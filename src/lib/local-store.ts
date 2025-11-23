@@ -862,7 +862,7 @@ export class LocalStore implements Store {
       ? `path LIKE '${pathPrefix.replace(/'/g, "''")}%'`
       : undefined;
 
-    // 2. Parallel Retrieval: Vector + FTS with server-side filtering
+    // 2. Parallel Retrieval: Vector + FTS 
     const vectorSearchQuery = table.search(queryVector).limit(candidateLimit);
     const ftsSearchQuery = table.search(query).limit(candidateLimit);
 

@@ -118,7 +118,12 @@ export class NodeFileSystem implements FileSystem {
     if (path.isAbsolute(relativePath)) {
       relativePath = relativePath.replace(/^[/\\]+/, "");
     }
-    let normalizedPath = relativePath.replace(/\\/g, "/") || ".";
+    let normalizedPath = relativePath.replace(/\\/g, "/");
+    // The root directory resolves to an empty relative path; avoid passing "./"
+    // to the ignore library, which expects already-relativized paths.
+    if (!normalizedPath) {
+      return false;
+    }
 
     // Check if it's a directory
     let isDirectory = false;

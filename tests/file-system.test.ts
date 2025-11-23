@@ -83,6 +83,13 @@ describe("NodeFileSystem", () => {
       false,
     );
   });
+
+  it("treats the repository root as not ignored without throwing", async () => {
+    const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
+
+    expect(() => fsImpl.isIgnored(tempRoot, tempRoot)).not.toThrow();
+    expect(fsImpl.isIgnored(tempRoot, tempRoot)).toBe(false);
+  });
 });
 
 describe("GitIgnoreFilter", () => {

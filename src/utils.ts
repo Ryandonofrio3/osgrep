@@ -541,11 +541,9 @@ export async function initialSync(
               pendingIndexCount += 1;
             }
 
-            const progressIndexed = indexed + (dryRun ? 0 : pendingIndexCount);
-            onProgress?.({ processed, indexed: progressIndexed, total, filePath });
+            onProgress?.({ processed, indexed, total, filePath });
           } catch (_err) {
-            const progressIndexed = indexed + (dryRun ? 0 : pendingIndexCount);
-            onProgress?.({ processed, indexed: progressIndexed, total, filePath });
+            onProgress?.({ processed, indexed, total, filePath });
           }
         }),
       ),
@@ -612,6 +610,7 @@ export async function initialSync(
                   await queueFlush();
                 }
               }
+              
 
               // Periodic meta save
               if (metaStore && !SKIP_META_SAVE && indexed % 25 === 0) {
@@ -628,19 +627,17 @@ export async function initialSync(
                 }
               }
             }
-            const progressIndexed = indexed + pendingIndexCount;
             onProgress?.({
               processed,
-              indexed: progressIndexed,
+              indexed,
               total,
               filePath: candidate.filePath,
             });
           } catch (_err) {
             pendingIndexCount = Math.max(0, pendingIndexCount - 1);
-            const progressIndexed = indexed + pendingIndexCount;
             onProgress?.({
               processed,
-              indexed: progressIndexed,
+              indexed,
               total,
               filePath: candidate.filePath,
             });

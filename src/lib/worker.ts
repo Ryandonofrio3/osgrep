@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parentPort } from "node:worker_threads";
-import { performance } from "node:perf_hooks";
 import { env, type PipelineType, pipeline } from "@huggingface/transformers";
 import { CONFIG, MODEL_IDS } from "../config";
 
@@ -19,6 +18,12 @@ function resolveThreadCount(): number {
 const HOMEDIR = os.homedir();
 const CACHE_DIR = path.join(HOMEDIR, ".osgrep", "models");
 const NUM_THREADS = resolveThreadCount();
+const LOG_MODELS =
+  process.env.OSGREP_DEBUG_MODELS === "1" ||
+  process.env.OSGREP_DEBUG_MODELS === "true";
+const log = (...args: unknown[]) => {
+  if (LOG_MODELS) console.log(...args);
+};
 
 // Configure ONNX Runtime threading before loading pipelines.
 const onnxBackend = env.backends.onnx as any;
@@ -33,7 +38,7 @@ const PROJECT_ROOT = process.cwd();
 const LOCAL_MODELS = path.join(PROJECT_ROOT, "models");
 if (fs.existsSync(LOCAL_MODELS)) {
   env.localModelPath = LOCAL_MODELS;
-  console.log(`Worker: Using local models from ${LOCAL_MODELS}`);
+  log(`Worker: Using local models from ${LOCAL_MODELS}`);
 }
 
 env.cacheDir = CACHE_DIR;
@@ -76,7 +81,7 @@ class EmbeddingWorker {
     try {
       return (await pipeline(task, model, options)) as unknown as T;
     } catch {
-      console.log("Worker: Local model not found. Downloading...");
+      log("Worker: Local model not found. Downloading...");
       env.allowRemoteModels = true;
       const loaded = (await pipeline(task, model, options)) as unknown as T;
       env.allowRemoteModels = false;
@@ -90,7 +95,7 @@ class EmbeddingWorker {
 
     this.initPromise = (async () => {
       try {
-        console.log(`Worker: Loading models from ${CACHE_DIR}...`);
+        log(`Worker: Loading models from ${CACHE_DIR}...`);
 
     if (!this.embedPipe) {
       this.embedPipe = await this.loadPipeline<EmbedPipeline>(
@@ -115,7 +120,7 @@ class EmbeddingWorker {
           );
         }
 
-        console.log("Worker: Models loaded.");
+        log("Worker: Models loaded.");
       } finally {
         this.initPromise = null;
       }
@@ -155,16 +160,13 @@ class EmbeddingWorker {
     if (!this.embedPipe) await this.initialize();
     if (!this.colbertPipe) await this.initialize();
 
-    const startDense = performance.now();
     const denseOut = await this.embedPipe!(texts, {
       pooling: "cls",
       normalize: true,
       truncation: true,
       max_length: 4096,
     });
-    const denseTime = performance.now() - startDense;
 
-    const startColbert = performance.now();
     const colbertOut = await this.colbertPipe!(texts, {
       pooling: "none",
       normalize: true,
@@ -172,13 +174,7 @@ class EmbeddingWorker {
       truncation: true,
       max_length: 512,
     });
-    const colbertTime = performance.now() - startColbert;
 
-    if (Math.random() < 0.05) {
-      console.log(
-        `[perf] dense=${denseTime.toFixed(1)}ms colbert=${colbertTime.toFixed(1)}ms`,
-      );
-    }
 
     const denseVectors = this.toDenseVectors(denseOut);
     const results: Array<{ dense: number[]; colbert: Buffer; scale: number }> = [];

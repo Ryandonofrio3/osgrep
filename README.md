@@ -134,10 +134,13 @@ osgrep doctor
 
 osgrep is designed to be a "good citizen" on your machine:
 
-1.  **The Thermostat:** Indexing adjusts concurrency in real-time based on memory pressure and CPU speed. It won't freeze your laptop.
+1.  **Bounded Concurrency:** Chunking/embedding stay within small thread pools (1–4) and capped batch sizes to keep laptops responsive (no dynamic throttling).
 2.  **Smart Chunking:** Uses `tree-sitter` to split code by function/class boundaries, ensuring embeddings capture complete logical blocks.
 3.  **Deduplication:** Identical code blocks (boilerplate, license headers) are embedded once and cached, saving space and time.
 4.  **Hybrid Search:** Uses Reciprocal Rank Fusion (RRF) to combine Vector Search (semantic) with FTS (keyword) for best-of-both-worlds accuracy.
+5.  **Global Batching:** A producer/consumer pipeline decouples chunking from embedding. Files are chunked concurrently, queued, embedded in fat batches, and written to LanceDB in bulk.
+6.  **Anchor-Only Scans & Batch Deletes:** File discovery and stale cleanup hit only anchor rows, and stale/changed paths are removed with a single `IN` delete to minimize I/O.
+7.  **Structural Boosting:** Function/class chunks get a small score boost; test/spec paths are slightly downweighted to bubble up primary definitions first.
 
 ## Configuration
 
@@ -210,4 +213,3 @@ See the [NOTICE](NOTICE) file for detailed attribution information.
 
 Licensed under the Apache License, Version 2.0.  
 See [LICENSE](LICENSE) and [Apache-2.0](https://opensource.org/licenses/Apache-2.0) for details.
-

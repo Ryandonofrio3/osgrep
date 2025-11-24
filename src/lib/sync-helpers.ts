@@ -52,7 +52,7 @@ export function createIndexingSpinner(
     onProgress(info) {
       const rel = formatRelativePath(root, info.filePath);
       const suffix = rel ? ` ${rel}` : "";
-      spinner.text = `Indexing files (${info.processed}/${info.total}) • indexed ${info.indexed}${suffix}`;
+      spinner.text = `Indexing files (${info.indexed}/${info.total})${suffix}`;
     },
   };
 }

@@ -6,6 +6,9 @@ import { MODEL_IDS } from "../config";
 
 const HOMEDIR = os.homedir();
 const CACHE_DIR = path.join(HOMEDIR, ".osgrep", "models");
+const LOG_MODELS =
+  process.env.OSGREP_DEBUG_MODELS === "1" ||
+  process.env.OSGREP_DEBUG_MODELS === "true";
 
 // Ensure transformers knows where to look/save
 env.cacheDir = CACHE_DIR;
@@ -21,7 +24,7 @@ export async function downloadModels(): Promise<void> {
   try {
     // 1. Download Dense Model
     await pipeline("feature-extraction", MODEL_IDS.embed, {
-      dtype: "q4", // or "q4" if you chose that
+      dtype: "int8", 
     });
 
     // 2. Download ColBERT Model
@@ -29,7 +32,9 @@ export async function downloadModels(): Promise<void> {
       dtype: "q8", 
     });
 
-    console.log("Worker: Models ready.");
+    if (LOG_MODELS) {
+      console.log("Worker: Models ready.");
+    }
   } catch (err) {
     console.error("Failed to download models:", err);
     throw err;

@@ -36,9 +36,16 @@ You will receive a list like: `src/auth.ts:50 [Definition]`.
 - If the tool says it is still indexing, Stop, alert the user and ask if they want to proceed.
 
 
-## Default Scoping
-If you know the target area, always scope your path to cut noise:
-- example: `src/console/app`
+## Critical: Always Use Path Scoping
+
+**Reduce irrelevant results by tightly scoping your path when possible.**  
+- If you know where to look (such as a folder or module), add its path to your query.
+- Example:  
+  - Good: `osgrep -m 10 "authentication middleware"`
+  - Better: `osgrep -m 10 "rate limiting" src/server/api`
+
+**Never search the full codebase if you can narrow it down!**  
+The more specific your path, the fewer distractions and the faster you’ll find what matters.
 
 ## Output Strategy
 When answering, cite the **file path** and specific **logic** found.

@@ -14,7 +14,6 @@ export const doctor = new Command("doctor")
     const models = path.join(root, "models");
     const data = path.join(root, "data");
     const grammars = path.join(root, "grammars");
-    const localModels = path.join(__dirname, "..", "..", "models");
     const modelIds = [MODEL_IDS.embed, MODEL_IDS.colbert];
 
     const checkDir = (name: string, p: string) => {
@@ -27,7 +26,6 @@ export const doctor = new Command("doctor")
     checkDir("Models", models);
     checkDir("Data (Vector DB)", data);
     checkDir("Grammars", grammars);
-    checkDir("Bundled Models (local)", localModels);
 
     const modelStatuses = modelIds.map((id) => {
       const modelPath = path.join(models, ...id.split("/"));

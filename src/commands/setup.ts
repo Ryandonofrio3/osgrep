@@ -54,4 +54,6 @@ export const setup = new Command("setup")
     console.log(`   osgrep index              # Index your repository`);
     console.log(`   osgrep "search query"     # Search your code`);
     console.log(`   osgrep doctor             # Check health status`);
+
+    process.exit(0);
   });

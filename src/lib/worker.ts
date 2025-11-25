@@ -163,7 +163,7 @@ class EmbeddingWorker {
       pooling: "cls",
       normalize: true,
       truncation: true,
-      max_length: 512,
+      max_length: 256,
     });
 
     const colbertOut = await this.colbertPipe!(texts, {
@@ -227,7 +227,7 @@ class EmbeddingWorker {
       pooling: "cls",
       normalize: true,
       truncation: true,
-      max_length: 512,
+      max_length: 256,
     });
     const denseVector = this.toDenseVectors(denseOut)[0] ?? [];
 

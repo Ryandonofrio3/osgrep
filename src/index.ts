@@ -21,7 +21,7 @@ program
   .option(
     "--store <string>",
     "The store to use (auto-detected if not specified)",
-    process.env.MXBAI_STORE || undefined,
+    process.env.OSGREP_STORE || undefined,
   );
 
 program.addCommand(search, { isDefault: true });

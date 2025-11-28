@@ -43,7 +43,6 @@ export const setup = new Command("setup")
     checkDir("Root", root);
     checkDir("Models", models);
     checkDir("Data (Vector DB)", data);
-    checkDir("Data (Vector DB)", data);
     checkDir("Grammars", grammars);
 
     // Download Grammars

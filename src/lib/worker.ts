@@ -320,7 +320,8 @@ if (parentPort) {
 
         if (message.query) {
           const query = await worker.encodeQuery(message.query.text);
-          parentPort?.postMessage({ id: message.id, query });
+          const memory = process.memoryUsage();
+          parentPort?.postMessage({ id: message.id, query, memory });
           return;
         }
 

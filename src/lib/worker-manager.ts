@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import { v4 as uuidv4 } from "uuid";
-import { WORKER_TIMEOUT_MS } from "../config";
+import { MAX_WORKER_MEMORY_MB, WORKER_TIMEOUT_MS } from "../config";
 
 type WorkerRequest =
   | { id: string; hybrid: { texts: string[] } }
@@ -44,8 +44,10 @@ export class WorkerManager {
     worker.on("message", (message) => this.handleMessage(message));
     worker.on("error", (err) => {
       console.error("Worker error:", err);
+      // If the worker errors out, we should probably restart it or at least reject pending
+      // But let's rely on 'exit' to handle the cleanup/restart logic if it crashes.
+      // Just reject pending requests here.
       this.rejectAll(err instanceof Error ? err : new Error(String(err)));
-      this.worker = null;
     });
     worker.on("exit", (code) => {
       if (!this.isClosing && code !== 0) {
@@ -58,8 +60,27 @@ export class WorkerManager {
     return worker;
   }
 
+  private async restartWorker(reason: string) {
+    if (this.isClosing) return;
+    console.warn(`[WorkerManager] Restarting worker: ${reason}`);
+
+    // 1. Force kill the old worker
+    if (this.worker) {
+      this.worker.removeAllListeners(); // Prevent "exit" handler from firing and logging "crashed"
+      await this.worker.terminate();
+      this.worker = null;
+    }
+
+    // 2. Reject any pending requests (they are lost)
+    // We could retry them, but for now, fail fast is safer to avoid death loops.
+    this.rejectAll(new Error(`Worker restarted: ${reason}`));
+
+    // 3. Create a new worker immediately (so it's ready)
+    this.ensureWorker();
+  }
+
   private handleMessage(message: any) {
-    const { id, hybrids, query, error } = message;
+    const { id, hybrids, query, error, memory } = message;
     const pending = this.pendingRequests.get(id);
     if (!pending) return;
 
@@ -71,6 +92,17 @@ export class WorkerManager {
     else pending.resolve(undefined);
 
     this.pendingRequests.delete(id);
+
+    // Check memory usage
+    if (memory && memory.rss) {
+      const rssMb = Math.round(memory.rss / 1024 / 1024);
+      if (rssMb > MAX_WORKER_MEMORY_MB) {
+        // Trigger restart asynchronously to let the current stack unwind
+        setTimeout(() => {
+          this.restartWorker(`Memory limit exceeded (${rssMb}MB > ${MAX_WORKER_MEMORY_MB}MB)`);
+        }, 100);
+      }
+    }
   }
 
   private rejectAll(error: Error) {
@@ -117,7 +149,10 @@ export class WorkerManager {
         const pending = this.pendingRequests.get(id);
         if (pending) {
           this.pendingRequests.delete(id);
-          reject(new Error(`Worker request timed out after ${WORKER_TIMEOUT_MS}ms`));
+          const err = new Error(`Worker request timed out after ${WORKER_TIMEOUT_MS}ms`);
+          reject(err);
+          // If it timed out, the worker is likely stuck. Kill it.
+          this.restartWorker("Request timeout");
         }
       }, WORKER_TIMEOUT_MS);
 

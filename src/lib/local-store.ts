@@ -610,12 +610,12 @@ export class LocalStore implements Store {
     // A. Search Code (High Priority - Get 300)
     const codeQuery = table.search(queryVector)
       .where(whereClause ? `${whereClause} AND ${codeClause}` : codeClause)
-      .limit(300);
+      .limit(100);
 
     // B. Search Docs (Low Priority - Get 50)
     const docQuery = table.search(queryVector)
       .where(whereClause ? `${whereClause} AND ${docClause}` : docClause)
-      .limit(50);
+      .limit(100);
 
     // C. FTS Search (Get 50)
     // Note: LanceDB FTS requires a string argument to search()
@@ -625,7 +625,7 @@ export class LocalStore implements Store {
       if (whereClause) {
         ftsQuery = ftsQuery.where(whereClause);
       }
-      ftsPromise = (ftsQuery.limit(50).toArray() as Promise<VectorRecord[]>).catch((e) => {
+      ftsPromise = (ftsQuery.limit(100).toArray() as Promise<VectorRecord[]>).catch((e) => {
         console.warn("FTS search failed (index missing?):", e instanceof Error ? e.message : String(e));
         return [];
       });
@@ -660,10 +660,9 @@ export class LocalStore implements Store {
       return { data: [] };
     }
 
-    // Performance: Cap candidates for expensive reranking
-    // MaxSim is O(N^2), so we only rerank the top 100 candidates from the hybrid pool.
-    // The pool is already "good" candidates from Vector + FTS.
-    const candidatesToRerank = candidates.slice(0, 100);
+    // Performance: We rerank all candidates from the hybrid pool (max 300).
+    // MaxSim is O(N^2), but 300 is manageable and ensures we don't drop good FTS/Doc matches.
+    const candidatesToRerank = candidates;
 
     // 3. Rerank (ColBERT + Structural Boosting)
     const queryMatrix = doRerank ? queryEnc.colbert : [];

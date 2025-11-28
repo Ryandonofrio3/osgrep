@@ -699,14 +699,15 @@ export class LocalStore implements Store {
 
         if (int8) {
           const docMatrix: number[][] = [];
-          // CRITICAL FIX: Always stride by the dimension used to STORE the data
+          // CRITICAL: Stride by the config dimension (assumes config matches stored data).
+          // If CONFIG.COLBERT_DIM changes after indexing, decoding will be incorrect.
           const stride = this.colbertDim;
 
           for (let i = 0; i < int8.length; i += stride) {
             const row: number[] = [];
             let isPadding = true;
 
-            // Iterate up to the stored width
+            // Iterate up to the stride width
             for (let k = 0; k < stride; k++) {
               if (i + k >= int8.length) break;
 
@@ -715,7 +716,8 @@ export class LocalStore implements Store {
 
               row.push(val);
             }
-            if (!isPadding) {
+            // Only push complete, non-padding rows to prevent dimension mismatches
+            if (!isPadding && row.length === stride) {
               docMatrix.push(row);
             }
           }

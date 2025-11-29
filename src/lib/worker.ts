@@ -102,9 +102,13 @@ class EmbeddingWorker {
         console.warn(
           `Worker: Failed to load model with device "${preferredDevice ?? "auto"}". Falling back to CPU.`,
         );
-        return await tryLoad("cpu");
+        try {
+          return await tryLoad("cpu");
+        } catch (cpuError) {
+          throw new Error(`Failed to load pipeline for ${model}: ${cpuError instanceof Error ? cpuError.message : String(cpuError)}`);
+        }
       }
-      throw error;
+      throw new Error(`Failed to load pipeline for ${model}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -184,11 +188,27 @@ class EmbeddingWorker {
     return embeddings;
   }
 
+  private checkMemoryPressure(): void {
+    const usage = process.memoryUsage();
+    const heapUsedMB = usage.heapUsed / 1024 / 1024;
+    const rssUsedMB = usage.rss / 1024 / 1024;
+    
+    if (rssUsedMB > 1000) {
+      console.warn(`Warning: High memory usage detected (RSS: ${rssUsedMB.toFixed(1)}MB)`);
+      console.warn("This usually indicates large files. Consider using .osgrep-ignore to exclude files >1MB");
+    } else if (heapUsedMB > 500) {
+      console.warn(`Warning: High heap usage detected (Heap: ${heapUsedMB.toFixed(1)}MB)`);
+      console.warn("Consider setting OSGREP_LOW_IMPACT=1 to reduce concurrent processing");
+    }
+  }
+
   async computeHybrid(
     texts: string[],
   ): Promise<Array<{ dense: number[]; colbert: Buffer; scale: number }>> {
     if (!this.embedPipe) await this.initialize();
     if (!this.colbertPipe) await this.initialize();
+    
+    this.checkMemoryPressure();
 
     // SEQUENTIAL EXECUTION (Reduces peak RAM usage)
     const denseOut = await this.embedPipe!(texts, {
@@ -253,6 +273,8 @@ class EmbeddingWorker {
     if (!this.embedPipe || !this.colbertPipe) await this.initialize();
     const embedPipe = this.embedPipe!;
     const colbertPipe = this.colbertPipe!;
+    
+    this.checkMemoryPressure();
 
     const denseOut = await embedPipe([text], {
       pooling: "cls",
@@ -291,9 +313,41 @@ class EmbeddingWorker {
     return { dense: denseVector, colbert: matrix, colbertDim: effectiveDim };
   }
 
+  async dispose(): Promise<void> {
+    try {
+      if (this.embedPipe && typeof (this.embedPipe as any).dispose === 'function') {
+        await (this.embedPipe as any).dispose();
+      }
+      if (this.colbertPipe && typeof (this.colbertPipe as any).dispose === 'function') {
+        await (this.colbertPipe as any).dispose();
+      }
+    } catch (error) {
+      log("Worker: Error during pipeline disposal:", error);
+    } finally {
+      this.embedPipe = null;
+      this.colbertPipe = null;
+      this.initPromise = null;
+    }
+  }
+
 }
 
 const worker = new EmbeddingWorker();
+
+// Cleanup on process exit
+process.on('SIGINT', async () => {
+  await worker.dispose();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  await worker.dispose();
+  process.exit(0);
+});
+
+process.on('beforeExit', async () => {
+  await worker.dispose();
+});
 
 if (parentPort) {
   parentPort.on(
@@ -307,6 +361,7 @@ if (parentPort) {
       try {
         // Handle graceful shutdown
         if (message.type === "shutdown") {
+          await worker.dispose();
           process.exit(0);
           return;
         }
@@ -328,9 +383,27 @@ if (parentPort) {
         throw new Error("Unknown message type");
       } catch (error) {
         console.error("Worker error:", error);
+        
+        // Check for memory-related errors and provide helpful guidance
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        let userFriendlyMessage = errorMessage;
+        
+        if (errorMessage.includes('Napi::Error') || 
+            errorMessage.includes('out of memory') || 
+            errorMessage.includes('memory') ||
+            errorMessage.includes('ENOMEM')) {
+          userFriendlyMessage = `Memory exceeded while processing files. This usually happens when indexing very large files.\n\nTry:\n- Using .osgrep-ignore to exclude large files (>1MB)\n- Breaking up large files into smaller chunks\n- Check your repository for unusually large files\n\nOriginal error: ${errorMessage}`;
+        }
+        
+        // Attempt cleanup on error to prevent memory leaks
+        try {
+          await worker.dispose();
+        } catch (disposeError) {
+          console.error("Worker: Failed to dispose on error:", disposeError);
+        }
         parentPort?.postMessage({
           id: message.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: userFriendlyMessage,
         });
       }
     },

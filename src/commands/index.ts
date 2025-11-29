@@ -140,6 +140,15 @@ export const index = new Command("index")
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       console.error("Failed to index:", message);
+      
+      // Provide helpful guidance for memory-related errors
+      if (message.includes('Memory exceeded') || message.includes('Napi::Error')) {
+        console.error("\nFor large files causing memory issues, consider:");
+        console.error("- Creating a .osgrep-ignore file to exclude large files");
+        console.error("- Breaking up large files into smaller chunks");
+        console.error("- Check your repository for unusually large files");
+      }
+      
       process.exitCode = 1;
       await gracefulExit(1);
     }

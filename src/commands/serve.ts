@@ -28,6 +28,7 @@ import {
   readServerLock,
   registerServer,
   unregisterServer,
+  verifyOsgrepServer,
   writeServerLock,
 } from "../utils";
 
@@ -574,17 +575,44 @@ const stopCommand = new Command("stop")
 
       let stopped = 0;
       let stale = 0;
+      let skipped = 0;
       for (const entry of servers) {
-        if (isProcessRunning(entry.pid)) {
-          try {
-            process.kill(entry.pid, "SIGTERM");
-            stopped++;
-            console.log(`Stopped server at ${entry.cwd} (pid: ${entry.pid}, port: ${entry.port})`);
-          } catch (err) {
-            console.error(`Failed to stop server at ${entry.cwd}:`, err);
-          }
-        } else {
+        if (!isProcessRunning(entry.pid)) {
           stale++;
+          // Clean up lock file for non-running process
+          try {
+            await clearServerLock(entry.cwd);
+          } catch (_err) {
+            // Ignore errors cleaning up lock files
+          }
+          continue;
+        }
+
+        // Verify this is actually an osgrep server before killing
+        // This prevents accidentally killing unrelated processes if PIDs were reused
+        const isOsgrep = await verifyOsgrepServer(entry.port, entry.authToken);
+        if (!isOsgrep) {
+          // Process exists but isn't our osgrep server - PID was likely reused
+          console.warn(
+            `Warning: PID ${entry.pid} exists but does not respond as osgrep server at ${entry.cwd}. ` +
+            `Skipping kill to avoid terminating unrelated process. Cleaning up stale registry entry.`
+          );
+          skipped++;
+          // Clean up stale lock file
+          try {
+            await clearServerLock(entry.cwd);
+          } catch (_err) {
+            // Ignore errors cleaning up lock files
+          }
+          continue;
+        }
+
+        try {
+          process.kill(entry.pid, "SIGTERM");
+          stopped++;
+          console.log(`Stopped server at ${entry.cwd} (pid: ${entry.pid}, port: ${entry.port})`);
+        } catch (err) {
+          console.error(`Failed to stop server at ${entry.cwd}:`, err);
         }
         // Clean up lock file
         try {
@@ -612,6 +640,9 @@ const stopCommand = new Command("stop")
       if (stale > 0) {
         console.log(`Cleaned up ${stale} stale registry entry/entries.`);
       }
+      if (skipped > 0) {
+        console.log(`Skipped ${skipped} entry/entries with reused PIDs (not osgrep servers).`);
+      }
     } else {
       // Stop server in current directory
       const lock = await readServerLock(root);
@@ -625,6 +656,20 @@ const stopCommand = new Command("stop")
         await clearServerLock(root);
         await unregisterServer(root);
         console.log("Cleaned up stale server lock.");
+        return;
+      }
+
+      // Verify this is actually an osgrep server before killing
+      // This prevents accidentally killing unrelated processes if PIDs were reused
+      const isOsgrep = await verifyOsgrepServer(lock.port, lock.authToken);
+      if (!isOsgrep) {
+        console.warn(
+          `Warning: PID ${lock.pid} exists but does not respond as osgrep server. ` +
+          `The PID may have been reused by another process. Cleaning up stale lock file.`
+        );
+        await clearServerLock(root);
+        await unregisterServer(root);
+        console.log("Cleaned up stale server lock without killing process.");
         return;
       }
 

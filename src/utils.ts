@@ -928,3 +928,64 @@ export function isProcessRunning(pid: number): boolean {
     return false;
   }
 }
+
+/**
+ * Verify that a process is actually an osgrep server by probing its /health endpoint.
+ * This prevents accidentally killing unrelated processes if PIDs get reused.
+ *
+ * @param port - The port the server should be listening on
+ * @param authToken - The auth token to verify the server
+ * @param timeoutMs - Timeout for the health check (default: 2000ms)
+ * @returns true if the server responds correctly with the given auth token
+ */
+export async function verifyOsgrepServer(
+  port: number,
+  authToken?: string,
+  timeoutMs = 2000,
+): Promise<boolean> {
+  if (!authToken) {
+    // Without an auth token, we can't verify - fall back to unsafe behavior
+    // but log a warning
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    const http = require("node:http") as typeof import("node:http");
+
+    const timeout = setTimeout(() => {
+      req.destroy();
+      resolve(false);
+    }, timeoutMs);
+
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: "/health",
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+        },
+      },
+      (res) => {
+        clearTimeout(timeout);
+        // Accept 200 status as confirmation this is our osgrep server
+        if (res.statusCode === 200) {
+          // Drain the response
+          res.resume();
+          resolve(true);
+        } else {
+          res.resume();
+          resolve(false);
+        }
+      },
+    );
+
+    req.on("error", () => {
+      clearTimeout(timeout);
+      resolve(false);
+    });
+
+    req.end();
+  });
+}

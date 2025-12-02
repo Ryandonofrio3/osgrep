@@ -155,16 +155,15 @@ export function formatTextResults(
   }
 
   // --- MODE B: HUMAN (Pretty) ---
-  let output = `\n${style.bold(`osgrep results (query: "${query}", ${results.length} matches across ${fileCount} files)`)}\n`;
-  let rank = 1;
-
+  // First pass: merge chunks and count actual displayed results
+  const mergedGroups: Array<{ filePath: string; merged: TextResult[] }> = [];
   for (const [filePath, chunks] of fileGroups) {
     chunks.sort((a, b) => a.start_line - b.start_line);
 
     // Smart Stitching Logic
     const merged: TextResult[] = [];
     if (chunks.length > 0) {
-      let current = chunks[0];
+      let current = { ...chunks[0] };
       for (let i = 1; i < chunks.length; i++) {
         const next = chunks[i];
         if (next.start_line <= current.end_line + 10) {
@@ -173,12 +172,19 @@ export function formatTextResults(
           if (next.chunk_type?.match(/function|class/)) current.chunk_type = next.chunk_type;
         } else {
           merged.push(current);
-          current = next;
+          current = { ...next };
         }
       }
       merged.push(current);
     }
+    mergedGroups.push({ filePath, merged });
+  }
 
+  const displayedCount = mergedGroups.reduce((sum, g) => sum + g.merged.length, 0);
+  let output = `\n${style.bold(`osgrep results (query: "${query}", ${displayedCount} matches across ${fileCount} files)`)}\n`;
+  let rank = 1;
+
+  for (const { filePath, merged } of mergedGroups) {
     const relPath = path.relative(root, filePath);
     for (const item of merged) {
       const tags: string[] = [];
@@ -224,6 +230,6 @@ export function formatTextResults(
       rank++;
     }
   }
-  output += style.dim(`${results.length} matches across ${fileCount} files`);
+  output += style.dim(`${displayedCount} matches across ${fileCount} files`);
   return output.trimEnd();
 }

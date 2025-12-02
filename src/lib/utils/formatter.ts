@@ -59,6 +59,10 @@ function cleanSnippetLines(snippet: string): string[] {
     });
 }
 
+/**
+ * Formats search results for display (agent plain mode or human pretty mode).
+ * Supports compact (paths only), score display, and content truncation options.
+ */
 export function formatTextResults(
   results: TextResult[],
   query: string,

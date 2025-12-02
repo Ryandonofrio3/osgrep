@@ -146,3 +146,184 @@ describe("GitIgnoreFilter", () => {
     });
   });
 });
+
+describe("NodeFileSystem symlink handling", () => {
+  let tempRoot: string;
+
+  beforeEach(async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osgrep-symlink-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  it("follows symlinks to files", async () => {
+    await fs.writeFile(path.join(tempRoot, "real-file.txt"), "content");
+    await fs.symlink(
+      path.join(tempRoot, "real-file.txt"),
+      path.join(tempRoot, "symlink-to-file.txt"),
+    );
+
+    const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
+    const files: string[] = [];
+    for await (const file of fsImpl.getFiles(tempRoot)) {
+      files.push(file);
+    }
+
+    expect(files).toContainEqual(path.join(tempRoot, "symlink-to-file.txt"));
+    expect(files).toContainEqual(path.join(tempRoot, "real-file.txt"));
+  });
+
+  it("follows symlinks to directories and indexes their contents", async () => {
+    await fs.mkdir(path.join(tempRoot, "real-dir"));
+    await fs.writeFile(path.join(tempRoot, "real-dir", "file1.txt"), "content1");
+    await fs.symlink(
+      path.join(tempRoot, "real-dir"),
+      path.join(tempRoot, "symlink-to-dir"),
+    );
+
+    const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
+    const files: string[] = [];
+    for await (const file of fsImpl.getFiles(tempRoot)) {
+      files.push(file);
+    }
+
+    // Files are indexed once per unique real directory (deduplication by real path).
+    // The file should be found through either the symlink or real path (alphabetically first wins).
+    const hasFile = files.some((f) => f.endsWith("file1.txt"));
+    expect(hasFile).toBe(true);
+    // Should only have one copy (not indexed twice through different paths)
+    const file1Matches = files.filter((f) => f.endsWith("file1.txt"));
+    expect(file1Matches.length).toBe(1);
+  });
+
+  it("skips broken symlinks without throwing", async () => {
+    await fs.symlink(
+      path.join(tempRoot, "nonexistent.txt"),
+      path.join(tempRoot, "broken-symlink.txt"),
+    );
+    await fs.writeFile(path.join(tempRoot, "real-file.txt"), "content");
+
+    const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
+    const files: string[] = [];
+
+    // Should not throw
+    for await (const file of fsImpl.getFiles(tempRoot)) {
+      files.push(file);
+    }
+
+    expect(files).not.toContainEqual(path.join(tempRoot, "broken-symlink.txt"));
+    expect(files).toContainEqual(path.join(tempRoot, "real-file.txt"));
+  });
+
+  it("handles circular symlinks without infinite loops", async () => {
+    await fs.mkdir(path.join(tempRoot, "circular"));
+    await fs.writeFile(
+      path.join(tempRoot, "circular", "file.txt"),
+      "content",
+    );
+    await fs.symlink(
+      path.join(tempRoot, "circular"),
+      path.join(tempRoot, "circular", "link-to-parent"),
+    );
+
+    const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
+    const files: string[] = [];
+
+    // Should complete without hanging (timeout would fail the test)
+    for await (const file of fsImpl.getFiles(tempRoot)) {
+      files.push(file);
+    }
+
+    expect(files).toContainEqual(path.join(tempRoot, "circular", "file.txt"));
+    // Should not have duplicates from following the circular link
+    const circularFiles = files.filter((f) => f.includes("circular/file.txt"));
+    expect(circularFiles.length).toBe(1);
+  });
+});
+
+describe("NodeFileSystem symlink handling - monorepo scenario", () => {
+  let tempRoot: string;
+
+  beforeEach(async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osgrep-monorepo-"));
+
+    // Create monorepo structure:
+    // model/
+    //   index.ts
+    // web/libs/model -> ../../model (symlink)
+    // api/libs/model -> ../../model (symlink)
+
+    await fs.mkdir(path.join(tempRoot, "model"));
+    await fs.writeFile(
+      path.join(tempRoot, "model", "index.ts"),
+      "export const model = {}",
+    );
+
+    await fs.mkdir(path.join(tempRoot, "web", "libs"), { recursive: true });
+    await fs.symlink(
+      path.join(tempRoot, "model"),
+      path.join(tempRoot, "web", "libs", "model"),
+    );
+
+    await fs.mkdir(path.join(tempRoot, "api", "libs"), { recursive: true });
+    await fs.symlink(
+      path.join(tempRoot, "model"),
+      path.join(tempRoot, "api", "libs", "model"),
+    );
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  it("indexes files from shared model package (via symlinks or direct)", async () => {
+    const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
+    const files: string[] = [];
+    for await (const file of fsImpl.getFiles(tempRoot)) {
+      files.push(file);
+    }
+
+    // The model content should be indexed exactly once (deduplication by real path).
+    // It could be through any path: model/, web/libs/model/, or api/libs/model/
+    const modelFiles = files.filter((f) => f.endsWith("index.ts"));
+    expect(modelFiles.length).toBe(1);
+
+    // Verify it was indexed through one of the valid paths
+    const validPaths = [
+      path.join(tempRoot, "model", "index.ts"),
+      path.join(tempRoot, "web", "libs", "model", "index.ts"),
+      path.join(tempRoot, "api", "libs", "model", "index.ts"),
+    ];
+    expect(validPaths).toContainEqual(modelFiles[0]);
+  });
+
+  it("symlinks allow access to content that would otherwise be inaccessible", async () => {
+    // This test verifies the key benefit: if you only had symlinks (no direct path),
+    // the content would still be indexed.
+    const isolatedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osgrep-isolated-"));
+
+    try {
+      // Create a "hidden" directory that's only accessible via symlink
+      const hiddenDir = await fs.mkdtemp(path.join(os.tmpdir(), "osgrep-hidden-"));
+      await fs.writeFile(path.join(hiddenDir, "secret.ts"), "secret content");
+
+      // Create a symlink to it from our workspace
+      await fs.symlink(hiddenDir, path.join(isolatedRoot, "linked-content"));
+
+      const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
+      const files: string[] = [];
+      for await (const file of fsImpl.getFiles(isolatedRoot)) {
+        files.push(file);
+      }
+
+      // The symlinked content should be indexed
+      expect(files).toContainEqual(path.join(isolatedRoot, "linked-content", "secret.ts"));
+
+      await fs.rm(hiddenDir, { recursive: true, force: true });
+    } finally {
+      await fs.rm(isolatedRoot, { recursive: true, force: true });
+    }
+  });
+});

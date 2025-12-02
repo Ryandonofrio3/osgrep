@@ -29,7 +29,7 @@ export interface FileSystem {
 
   /**
    * Loads the .osgrepignore file for a directory.
-   * 
+   *
    * The .osgrepignore file uses the same pattern syntax as .gitignore and allows
    * you to exclude additional files or patterns from indexing beyond what's in
    * .gitignore. Patterns are checked before .gitignore patterns.
@@ -63,9 +63,64 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Gets all files recursively from a directory
+   * Resolves a path entry to determine if it's a file or directory.
+   * Handles symlinks by following them to their target.
+   * Returns null if the path cannot be resolved (broken symlink, permission error, etc.)
    */
-  private async *getAllFilesRecursive(dir: string, root: string): AsyncGenerator<string> {
+  private resolveEntry(
+    fullPath: string,
+    entry: fs.Dirent,
+  ): { isDir: boolean; isFile: boolean; realPath: string } | null {
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+    let realPath = fullPath;
+
+    if (entry.isSymbolicLink()) {
+      try {
+        // Resolve the symlink to get the real path
+        realPath = fs.realpathSync(fullPath);
+        // Use stat (not lstat) to follow the symlink and get target info
+        const stat = fs.statSync(fullPath);
+        isDir = stat.isDirectory();
+        isFile = stat.isFile();
+      } catch {
+        // Broken symlink or permission error - skip it
+        return null;
+      }
+    }
+
+    return { isDir, isFile, realPath };
+  }
+
+  /**
+   * Gets all files recursively from a directory.
+   * Properly handles symlinks by following them to their targets.
+   * Prevents infinite loops from circular symlinks by tracking visited paths.
+   *
+   * @param dir - Current directory to scan
+   * @param root - Original root directory (for relative path calculations)
+   * @param visited - Set of real paths already visited (prevents circular symlink loops)
+   */
+  private async *getAllFilesRecursive(
+    dir: string,
+    root: string,
+    visited: Set<string> = new Set(),
+  ): AsyncGenerator<string> {
+    // Resolve the current directory to its real path and track it
+    let realDir: string;
+    try {
+      realDir = fs.realpathSync(dir);
+    } catch {
+      // Cannot resolve directory - skip it
+      return;
+    }
+
+    // Check for circular reference
+    if (visited.has(realDir)) {
+      return;
+    }
+    visited.add(realDir);
+
     try {
       const entries = await fs.promises.readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
@@ -75,7 +130,21 @@ export class NodeFileSystem implements FileSystem {
           continue;
         }
 
-        if (entry.isDirectory()) {
+        // Resolve the entry (handles symlinks)
+        const resolved = this.resolveEntry(fullPath, entry);
+        if (!resolved) {
+          // Broken symlink or unresolvable - skip
+          continue;
+        }
+
+        const { isDir, isFile, realPath } = resolved;
+
+        if (isDir) {
+          // Check for circular reference before recursing
+          if (visited.has(realPath)) {
+            continue;
+          }
+
           // Check if this directory is a nested git repository
           if (this.git.isGitRepository(fullPath)) {
             // It's a nested git repo! Switch to git ls-files for this subtree.
@@ -87,13 +156,13 @@ export class NodeFileSystem implements FileSystem {
             }
             // Fallback if git fails
             if (!yielded) {
-              yield* this.getAllFilesRecursive(fullPath, root);
+              yield* this.getAllFilesRecursive(fullPath, root, visited);
             }
           } else {
             // Standard directory, recurse
-            yield* this.getAllFilesRecursive(fullPath, root);
+            yield* this.getAllFilesRecursive(fullPath, root, visited);
           }
-        } else if (entry.isFile()) {
+        } else if (isFile) {
           yield fullPath;
         }
       }
@@ -117,13 +186,13 @@ export class NodeFileSystem implements FileSystem {
         console.warn(
           `git ls-files returned no results for ${dirRoot}. Falling back to filesystem traversal...`,
         );
-        yield* this.getAllFilesRecursive(dirRoot, dirRoot);
+        yield* this.getAllFilesRecursive(dirRoot, dirRoot, new Set());
       }
 
       return;
     }
 
-    yield* this.getAllFilesRecursive(dirRoot, dirRoot);
+    yield* this.getAllFilesRecursive(dirRoot, dirRoot, new Set());
   }
 
   isIgnored(filePath: string, root: string): boolean {
@@ -175,11 +244,11 @@ export class NodeFileSystem implements FileSystem {
 
   /**
    * Loads the .osgrepignore file for a directory.
-   * 
+   *
    * The .osgrepignore file uses the same pattern syntax as .gitignore and allows
    * you to exclude additional files or patterns from indexing beyond what's in
    * .gitignore. Patterns are checked before .gitignore patterns.
-   * 
+   *
    * @param dirRoot The root directory to load .osgrepignore from
    */
   loadOsgrepignore(dirRoot: string): void {

@@ -129,11 +129,45 @@ Runs a lightweight HTTP server with live file watching so searches stay hot in R
 - Search endpoint: `POST /search` with `{ query, limit, path, rerank }`
 - Writes lock: `.osgrep/server.json` with `port`/`pid`
 
-Usage:
+**Options:**
+| Flag | Description |
+| --- | --- |
+| `-p, --port <port>` | Port to listen on (auto-increments if not specified) |
+| `-b, --background` | Run server in background and exit immediately |
+
+**Port Selection (priority order):**
+1. Explicit `-p <port>` flag
+2. `OSGREP_PORT` environment variable
+3. Auto-increment from registry (last used port + 1, or 4444 if no servers)
+
+**Usage:**
 
 ```bash
-osgrep serve             # defaults to port 4444
-OSGREP_PORT=5555 osgrep serve
+osgrep serve                    # Foreground, port 4444 (or next available)
+osgrep serve --background       # Background mode, auto port
+osgrep serve -b -p 5000         # Background on specific port
+```
+
+**Subcommands:**
+
+```bash
+osgrep serve status             # Show server status for current directory
+osgrep serve stop               # Stop server in current directory
+osgrep serve stop --all         # Stop all running osgrep servers
+```
+
+**Example workflow:**
+
+```bash
+# Start servers in multiple projects
+cd ~/project-a && osgrep serve -b    # Starts on port 4444
+cd ~/project-b && osgrep serve -b    # Starts on port 4445 (auto-increment)
+
+# Check status
+osgrep serve status
+
+# Stop all when done
+osgrep serve stop --all
 ```
 
 Claude Code hooks start/stop this automatically; you rarely need to run it manually.

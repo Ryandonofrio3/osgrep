@@ -26,7 +26,7 @@ const DEFAULT_EMBED_BATCH_SIZE = 24;
 
 // Extensions we consider for indexing to avoid binary noise and improve relevance.
 const INDEXABLE_EXTENSIONS = new Set([
-  // Code
+// Code
   ".ts",
   ".tsx",
   ".js",
@@ -59,7 +59,7 @@ const INDEXABLE_EXTENSIONS = new Set([
   ".mm",
   ".f90",
   ".f95",
-  // Config / Data / Docs
+// Config / Data / Docs
   ".json",
   ".yaml",
   ".yml",
@@ -841,8 +841,10 @@ export async function clearServerLock(
   }
 }
 
-// Central Server Registry
-// Tracks all running osgrep servers across different directories
+/**
+ * Central Server Registry - Tracks all running osgrep servers across directories.
+ * Stored in ~/.osgrep/servers.json for multi-workspace coordination.
+ */
 
 const SERVERS_REGISTRY_FILE = path.join(os.homedir(), ".osgrep", "servers.json");
 
@@ -857,6 +859,7 @@ interface ServersRegistry {
   servers: ServerEntry[];
 }
 
+/** Reads the server registry file. Returns empty registry if missing or corrupt. */
 async function readRegistry(): Promise<ServersRegistry> {
   try {
     const content = await fs.promises.readFile(SERVERS_REGISTRY_FILE, "utf-8");
@@ -870,6 +873,7 @@ async function readRegistry(): Promise<ServersRegistry> {
   return { servers: [] };
 }
 
+/** Atomically writes the server registry using tmp file + rename. */
 async function writeRegistry(registry: ServersRegistry): Promise<void> {
   const dir = path.dirname(SERVERS_REGISTRY_FILE);
   await fs.promises.mkdir(dir, { recursive: true });
@@ -892,6 +896,7 @@ async function writeRegistry(registry: ServersRegistry): Promise<void> {
   }
 }
 
+/** Registers a server in the central registry. Replaces any existing entry for the same cwd. */
 export async function registerServer(entry: ServerEntry): Promise<void> {
   const registry = await readRegistry();
   // Remove any existing entry for this cwd
@@ -900,6 +905,7 @@ export async function registerServer(entry: ServerEntry): Promise<void> {
   await writeRegistry(registry);
 }
 
+/** Removes a server from the registry by cwd. Silently ignores errors. */
 export async function unregisterServer(cwd: string): Promise<void> {
   try {
     const registry = await readRegistry();
@@ -911,15 +917,18 @@ export async function unregisterServer(cwd: string): Promise<void> {
   }
 }
 
+/** Returns all registered servers. May include stale entries. */
 export async function listAllServers(): Promise<ServerEntry[]> {
   const registry = await readRegistry();
   return registry.servers;
 }
 
+/** Clears the entire server registry. Used after stopping all servers. */
 export async function clearAllServers(): Promise<void> {
   await writeRegistry({ servers: [] });
 }
 
+/** Checks if a process is running by sending signal 0. */
 export function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);

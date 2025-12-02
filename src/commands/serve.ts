@@ -185,6 +185,7 @@ async function respondJson(
 
 const DEFAULT_PORT = 4444;
 
+/** Returns next available port by incrementing from highest registered server port. */
 async function getNextAvailablePort(): Promise<number> {
   const servers = await listAllServers();
   if (servers.length === 0) {
@@ -557,7 +558,7 @@ export const serve = new Command("serve")
     }
   });
 
-// Stop subcommand
+/** Subcommand: Stop osgrep server(s). Verifies PID ownership before killing. */
 const stopCommand = new Command("stop")
   .description("Stop the osgrep server")
   .option("-a, --all", "Stop all running osgrep servers")
@@ -696,7 +697,7 @@ const stopCommand = new Command("stop")
     }
   });
 
-// Status subcommand
+/** Subcommand: Show osgrep server status for current directory. */
 const statusCommand = new Command("status")
   .description("Show osgrep server status")
   .action(async () => {

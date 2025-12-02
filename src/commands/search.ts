@@ -280,6 +280,11 @@ export const search: Command = new CommanderCommand("search")
   .option("--per-file <n>", "Number of matches to show per file", "1")
   .option("--scores", "Show relevance scores", false)
   .option(
+    "--min-score <score>",
+    "Minimum relevance score (0-1) to include in results",
+    "0",
+  )
+  .option(
     "--compact",
     "Compact hits view (paths + line ranges + role/preview)",
     false,
@@ -307,6 +312,7 @@ export const search: Command = new CommanderCommand("search")
       perFile: string;
       scores: boolean;
       compact: boolean;
+      minScore: string;
       plain: boolean;
       sync: boolean;
       dryRun: boolean;
@@ -318,6 +324,10 @@ export const search: Command = new CommanderCommand("search")
     }
 
     const root = process.cwd();
+    const minScore =
+      Number.isFinite(Number.parseFloat(options.minScore))
+        ? Number.parseFloat(options.minScore)
+        : 0;
     let vectorDb: VectorDB | null = null;
 
     // Check for running server
@@ -333,16 +343,22 @@ export const search: Command = new CommanderCommand("search")
           body: JSON.stringify({
             query: pattern,
             limit: parseInt(options.m, 10),
-            path: exec_path ? path.relative(projectRootForServer, path.resolve(exec_path)) : undefined,
+            path: exec_path
+              ? path.relative(projectRootForServer, path.resolve(exec_path))
+              : undefined,
           }),
         });
 
         if (response.ok) {
-          const body = await response.json() as { results: any[] };
+          const body = (await response.json()) as { results: any[] };
 
           const searchResult = { data: body.results };
+          const filteredData = searchResult.data.filter(
+            (r) => typeof r.score !== "number" || r.score >= minScore,
+          );
+
           const compactHits = options.compact
-            ? toCompactHits(searchResult.data)
+            ? toCompactHits(filteredData)
             : [];
 
           if (options.compact) {
@@ -356,7 +372,7 @@ export const search: Command = new CommanderCommand("search")
             return; // EXIT
           }
 
-          if (!searchResult.data.length) {
+          if (!filteredData.length) {
             console.log("No matches found.");
             return; // EXIT
           }
@@ -365,18 +381,23 @@ export const search: Command = new CommanderCommand("search")
           const shouldBePlain = options.plain || !isTTY;
 
           if (shouldBePlain) {
-            const mappedResults = toTextResults(searchResult.data);
-            const output = formatTextResults(mappedResults, pattern, projectRootForServer, {
-              isPlain: true,
-              compact: options.compact,
-              content: options.content,
-              perFile: parseInt(options.perFile, 10),
-              showScores: options.scores,
-            });
+            const mappedResults = toTextResults(filteredData);
+            const output = formatTextResults(
+              mappedResults,
+              pattern,
+              projectRootForServer,
+              {
+                isPlain: true,
+                compact: options.compact,
+                content: options.content,
+                perFile: parseInt(options.perFile, 10),
+                showScores: options.scores,
+              },
+            );
             console.log(output);
           } else {
             const { formatResults } = await import("../lib/output/formatter");
-            const output = formatResults(searchResult.data, projectRootForServer, {
+            const output = formatResults(filteredData, projectRootForServer, {
               content: options.content,
             });
             console.log(output);
@@ -386,7 +407,10 @@ export const search: Command = new CommanderCommand("search")
         }
       } catch (e) {
         if (process.env.DEBUG) {
-          console.error("[search] server request failed, falling back to local:", e);
+          console.error(
+            "[search] server request failed, falling back to local:",
+            e,
+          );
         }
       }
     }
@@ -483,8 +507,12 @@ export const search: Command = new CommanderCommand("search")
         exec_path ? path.relative(projectRoot, path.resolve(exec_path)) : "",
       );
 
+      const filteredData = searchResult.data.filter(
+        (r) => typeof r.score !== "number" || r.score >= minScore,
+      );
+
       const compactHits = options.compact
-        ? toCompactHits(searchResult.data)
+        ? toCompactHits(filteredData)
         : [];
       const compactText =
         options.compact && compactHits.length
@@ -496,7 +524,7 @@ export const search: Command = new CommanderCommand("search")
             ? "No matches found."
             : "";
 
-      if (!searchResult.data.length) {
+      if (!filteredData.length) {
         console.log("No matches found.");
         return;
       }
@@ -510,7 +538,7 @@ export const search: Command = new CommanderCommand("search")
       const shouldBePlain = options.plain || !isTTY;
 
       if (shouldBePlain) {
-        const mappedResults = toTextResults(searchResult.data);
+        const mappedResults = toTextResults(filteredData);
         const output = formatTextResults(mappedResults, pattern, projectRoot, {
           isPlain: true,
           compact: options.compact,
@@ -522,7 +550,7 @@ export const search: Command = new CommanderCommand("search")
       } else {
         // Use new holographic formatter for TTY
         const { formatResults } = await import("../lib/output/formatter");
-        const output = formatResults(searchResult.data, projectRoot, {
+        const output = formatResults(filteredData, projectRoot, {
           content: options.content,
         });
         console.log(output);

@@ -120,7 +120,8 @@ export function formatTextResults(
           ]
           : lines;
 
-      output += `${relPath}:${line}${tagStr}\n`;
+      const scoreStr = options.scores ? ` (${item.score.toFixed(2)})` : "";
+      output += `${relPath}:${line}${scoreStr}${tagStr}\n`;
       truncated.forEach((ln) => {
         output += `  ${ln}\n`;
       });

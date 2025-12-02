@@ -25,3 +25,4 @@ benchmarks/*.log
 
 .osgrep
 TODO.md
+AGENTS.md

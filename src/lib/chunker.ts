@@ -140,6 +140,11 @@ export class TreeSitterChunker {
       ".rb": "ruby",
       ".php": "php",
       ".json": "json",
+      ".yaml": "yaml",
+      ".yml": "yaml",
+      ".kt": "kotlin",
+      ".kts": "kotlin",
+      ".swift": "swift",
     };
     lang = languageExtensions[ext] || "";
     if (!lang) return [];
@@ -201,6 +206,20 @@ export class TreeSitterChunker {
           "interface_declaration",
         ],
         json: ["pair"],
+        yaml: ["block_mapping_pair", "block_sequence"],
+        kotlin: [
+          "function_declaration",
+          "class_declaration",
+          "object_declaration",
+          "property_declaration",
+        ],
+        swift: [
+          "function_declaration",
+          "class_declaration",
+          "struct_declaration",
+          "enum_declaration",
+          "protocol_declaration",
+        ],
       };
 
       if (common.includes(t)) return true;

@@ -101,10 +101,25 @@ Manually indexes the repository. Useful if you want to pre-warm the cache or if 
 - Respects `.gitignore` and `.osgrepignore` (see [Configuration](#ignoring-files) section).
 - **Smart Indexing:** Only embeds code and config files. Skips binaries, lockfiles, and minified assets.
 - **Bounded Concurrency:** Uses a fixed thread pool to keep your system responsive.
+- **Semantic Chunking:** Uses TreeSitter grammars for supported languages (TypeScript, JavaScript, Python, Go, Rust, C/C++, Java, C#, Ruby, PHP, JSON, YAML, Kotlin, Swift).
+
+**Options:**
+| Flag | Description | Default |
+| --- | --- | --- |
+| `-d`, `--dry-run` | See what would be indexed without making changes. | `false` |
+| `-p`, `--path <dir>` | Path to index (defaults to current directory). | `.` |
+| `-r`, `--reset` | Remove existing index and re-index from scratch. | `false` |
+| `-v`, `--verbose` | Show detailed progress with file names. | `false` |
+| `--grammar-only` | Only index files with TreeSitter grammar support. | `false` |
+
+**Examples:**
 
 ```bash
-osgrep index              # Index current dir
-osgrep index --dry-run    # See what would be indexed
+osgrep index                    # Index current dir
+osgrep index --dry-run          # See what would be indexed
+osgrep index --verbose          # Watch detailed progress (useful for debugging)
+osgrep index --grammar-only     # Skip files without grammar support
+osgrep index --reset            # Full re-index from scratch
 ```
 
 ### `osgrep serve`
@@ -240,6 +255,8 @@ pnpm format       # biome check
 
   - **Index feels stale?** Run `osgrep index` to refresh.
   - **Weird results?** Run `osgrep doctor` to verify models.
+  - **Index getting stuck?** Run `osgrep index --verbose` to see which file is being processed.
+  - **Want faster indexing?** Run `osgrep index --grammar-only` to skip files without TreeSitter support.
   - **Need a fresh start?** Delete `~/.osgrep/data` and `~/.osgrep/meta.json` and run `osgrep index`.
 
 ## Attribution

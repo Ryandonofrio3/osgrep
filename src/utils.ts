@@ -16,6 +16,31 @@ import type {
 } from "./lib/sync-helpers";
 import { workerManager } from "./lib/worker-manager";
 
+// Extensions that have TreeSitter grammar support for semantic chunking
+const GRAMMAR_SUPPORTED_EXTENSIONS = new Set([
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".py",
+  ".go",
+  ".rs",
+  ".cpp",
+  ".c",
+  ".h",
+  ".hpp",
+  ".java",
+  ".cs",
+  ".rb",
+  ".php",
+  ".json",
+  ".yaml",
+  ".yml",
+  ".kt",
+  ".kts",
+  ".swift",
+]);
+
 const META_FILE = path.join(os.homedir(), ".osgrep", "meta.json");
 const PROFILE_ENABLED =
   process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
@@ -116,11 +141,26 @@ function resolveEmbedBatchSize(): number {
   return DEFAULT_EMBED_BATCH_SIZE;
 }
 
+/**
+ * Check if a file extension has TreeSitter grammar support.
+ * Files with grammar support get semantic chunking (functions, classes, etc.)
+ * Files without grammar support use fallback sliding-window chunking.
+ */
+export function hasGrammarSupport(filePath: string): boolean {
+  const ext = extname(filePath).toLowerCase();
+  return GRAMMAR_SUPPORTED_EXTENSIONS.has(ext);
+}
+
 // Check if a file should be indexed (extension and size).
-function isIndexableFile(filePath: string): boolean {
+function isIndexableFile(filePath: string, grammarOnly = false): boolean {
   const ext = extname(filePath).toLowerCase();
   const basename = path.basename(filePath).toLowerCase();
   if (!INDEXABLE_EXTENSIONS.has(ext) && !INDEXABLE_EXTENSIONS.has(basename)) {
+    return false;
+  }
+
+  // If grammarOnly is true, skip files without grammar support
+  if (grammarOnly && !hasGrammarSupport(filePath)) {
     return false;
   }
 
@@ -135,8 +175,8 @@ function isIndexableFile(filePath: string): boolean {
   return true;
 }
 
-export function isIndexablePath(filePath: string): boolean {
-  return isIndexableFile(filePath);
+export function isIndexablePath(filePath: string, grammarOnly = false): boolean {
+  return isIndexableFile(filePath, grammarOnly);
 }
 
 export class MetaStore {
@@ -394,6 +434,11 @@ export async function preparedChunksToVectors(
   });
 }
 
+export interface InitialSyncOptions {
+  grammarOnly?: boolean;
+  verbose?: boolean;
+}
+
 export async function initialSync(
   store: Store,
   fileSystem: FileSystem,
@@ -403,7 +448,10 @@ export async function initialSync(
   onProgress?: (info: InitialSyncProgress) => void,
   metaStore?: MetaStore,
   signal?: AbortSignal,
+  options?: InitialSyncOptions,
 ): Promise<InitialSyncResult> {
+  const grammarOnly = options?.grammarOnly ?? false;
+
   if (metaStore) {
     await metaStore.load();
   }
@@ -476,7 +524,7 @@ export async function initialSync(
   }
 
   // Apply extension filter to pick index candidates.
-  const repoFiles = aliveFiles.filter((filePath) => isIndexableFile(filePath));
+  const repoFiles = aliveFiles.filter((filePath) => isIndexableFile(filePath, grammarOnly));
 
   // C. Determine Staleness
   // Stale = In DB, but not in 'aliveFiles' (meaning deleted from disk or added to .gitignore)

@@ -34,9 +34,25 @@ export const index = new Command("index")
     "Remove existing index and re-index from scratch",
     false,
   )
+  .option(
+    "-v, --verbose",
+    "Show detailed progress with file names",
+    false,
+  )
+  .option(
+    "--grammar-only",
+    "Only index files with TreeSitter grammar support (skip fallback chunking)",
+    false,
+  )
   .action(async (_args, cmd) => {
-    const options: { store?: string; dryRun: boolean; path: string; reset: boolean } =
-      cmd.optsWithGlobals();
+    const options: {
+      store?: string;
+      dryRun: boolean;
+      path: string;
+      reset: boolean;
+      verbose: boolean;
+      grammarOnly: boolean;
+    } = cmd.optsWithGlobals();
 
     let store: Store | null = null;
     try {
@@ -71,6 +87,7 @@ export const index = new Command("index")
       const { spinner, onProgress } = createIndexingSpinner(
         indexRoot,
         "Indexing...",
+        { verbose: options.verbose },
       );
       try {
         try {
@@ -89,6 +106,8 @@ export const index = new Command("index")
           options.dryRun,
           onProgress,
           metaStore,
+          undefined,
+          { grammarOnly: options.grammarOnly, verbose: options.verbose },
         );
 
         if (options.dryRun) {

@@ -30,6 +30,22 @@ export const WORKER_TIMEOUT_MS = Number.parseInt(
   10,
 );
 
+export const WORKER_BOOT_TIMEOUT_MS = Number.parseInt(
+  process.env.OSGREP_WORKER_BOOT_TIMEOUT_MS || "300000",
+  10,
+);
+
+export const MAX_WORKER_MEMORY_MB = Number.parseInt(
+  process.env.OSGREP_MAX_WORKER_MEMORY_MB ||
+  String(
+    Math.max(
+      2048,
+      Math.floor((os.totalmem() / 1024 / 1024) * 0.5), // 50% of system RAM
+    ),
+  ),
+  10,
+);
+
 const HOME = os.homedir();
 const GLOBAL_ROOT = path.join(HOME, ".osgrep");
 

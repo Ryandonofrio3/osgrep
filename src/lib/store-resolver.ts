@@ -87,3 +87,30 @@ export function getAutoStoreId(targetDir: string = process.cwd()): string {
   return sanitizeStoreName(`${folderName}-${pathHash}`);
 }
 
+/**
+ * Resolves the store ID with git worktree awareness
+ *
+ * If running from within a git worktree, returns the store ID for the
+ * main repository instead of the worktree itself. This allows worktrees
+ * to share the same index as the main repo.
+ *
+ * @param targetDir - Directory to resolve (defaults to current working directory)
+ * @returns Store ID for the main repository (or the directory itself if not in a worktree)
+ */
+export function resolveStoreIdWithWorktree(
+  targetDir: string = process.cwd(),
+): string {
+  const git = createGit();
+  const absolutePath = resolve(targetDir);
+
+  // If in a worktree, resolve against main repo instead
+  if (git.isWorktree(absolutePath)) {
+    const mainRoot = git.getMainRepoRoot(absolutePath);
+    if (mainRoot) {
+      return getAutoStoreId(mainRoot);
+    }
+  }
+
+  return getAutoStoreId(absolutePath);
+}
+

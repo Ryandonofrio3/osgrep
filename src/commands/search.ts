@@ -6,7 +6,8 @@ import { ensureSetup } from "../lib/setup-helpers";
 import type { FileMetadata, SearchResponse, Store } from "../lib/store";
 import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns";
 import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
-import { getAutoStoreId } from "../lib/store-resolver";
+import { resolveStoreIdWithWorktree } from "../lib/store-resolver";
+import { createGit } from "../lib/context";
 import {
   createIndexingSpinner,
   formatDryRunSummary,
@@ -88,7 +89,15 @@ export const search: Command = new CommanderCommand("search")
       exec_path = "";
     }
 
-    const root = process.cwd();
+    // Resolve root to main repo if in a worktree
+    let root = process.cwd();
+    const git = createGit();
+    if (git.isWorktree(root)) {
+      const mainRoot = git.getMainRepoRoot(root);
+      if (mainRoot) {
+        root = mainRoot;
+      }
+    }
 
     // Try server fast path for standard text search
     async function tryServerFastPath(): Promise<boolean> {
@@ -186,7 +195,8 @@ export const search: Command = new CommanderCommand("search")
       store = await createStore();
 
       // Auto-detect store ID if not explicitly provided
-      const storeId = options.store || getAutoStoreId(root);
+      // Uses worktree-aware resolution to share index with main repo
+      const storeId = options.store || resolveStoreIdWithWorktree(root);
 
       await ensureStoreExists(store, storeId);
       const autoSync =

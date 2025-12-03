@@ -8,7 +8,8 @@ import chokidar, { type FSWatcher } from "chokidar";
 import { createFileSystem, createStore } from "../lib/context";
 import { ensureSetup } from "../lib/setup-helpers";
 import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
-import { getAutoStoreId } from "../lib/store-resolver";
+import { resolveStoreIdWithWorktree } from "../lib/store-resolver";
+import { createGit } from "../lib/context";
 import type { Store } from "../lib/store";
 import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns"
 import {
@@ -184,8 +185,17 @@ export const serve = new Command("serve")
     const options: { port: string; store?: string; parentPid?: string } = cmd.optsWithGlobals();
     const port = parseInt(options.port, 10);
     const parentPid = options.parentPid ? parseInt(options.parentPid, 10) : null;
-    const root = process.cwd();
     const authToken = randomUUID();
+
+    // Resolve root to main repo if in a worktree
+    let root = process.cwd();
+    const git = createGit();
+    if (git.isWorktree(root)) {
+      const mainRoot = git.getMainRepoRoot(root);
+      if (mainRoot) {
+        root = mainRoot;
+      }
+    }
 
     let store: Store | null = null;
     let watcher: FSWatcher | null = null;
@@ -287,7 +297,8 @@ export const serve = new Command("serve")
       await ensureSetup({ silent: true });
       await metaStore.load();
       store = await createStore();
-      const storeId = options.store || getAutoStoreId(root);
+      // Uses worktree-aware resolution to share index with main repo
+      const storeId = options.store || resolveStoreIdWithWorktree(root);
       await ensureStoreExists(store, storeId);
 
       const empty = await isStoreEmpty(store, storeId);

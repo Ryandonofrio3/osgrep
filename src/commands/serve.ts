@@ -11,6 +11,7 @@ import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
 import { getAutoStoreId } from "../lib/store-resolver";
 import type { Store } from "../lib/store";
 import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns"
+import { spawn } from "node:child_process";
 import {
   clearServerLock,
   computeBufferHash,
@@ -19,9 +20,14 @@ import {
   indexFile,
   initialSync,
   isIndexablePath,
+  isProcessRunning,
+  listAllServers,
   MetaStore,
   preparedChunksToVectors,
   readServerLock,
+  registerServer,
+  unregisterServer,
+  verifyOsgrepServer,
   writeServerLock,
 } from "../utils";
 
@@ -176,15 +182,153 @@ async function respondJson(
   res.end(JSON.stringify(payload));
 }
 
+const DEFAULT_PORT = 4444;
+const MAX_PORT_RETRIES = 10;
+
+/** Returns next available port by incrementing from highest registered server port. */
+async function getNextAvailablePort(): Promise<number> {
+  const servers = await listAllServers();
+  if (servers.length === 0) {
+    return DEFAULT_PORT;
+  }
+  const maxPort = Math.max(...servers.map((s) => s.port));
+  return maxPort + 1;
+}
+
+/**
+ * Attempts to bind a server to a port, retrying with incremented ports on EADDRINUSE.
+ * Only retries if port was auto-assigned (not explicitly specified by user).
+ */
+function listenWithRetry(
+  server: http.Server,
+  initialPort: number,
+  isAutoAssigned: boolean,
+  onSuccess: (port: number) => void,
+  onError: (error: Error) => void,
+): void {
+  let currentPort = initialPort;
+  let retries = 0;
+
+  const tryListen = () => {
+    server.once("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        if (!isAutoAssigned) {
+          // Port was explicitly specified, don't retry
+          onError(new Error(`Port ${currentPort} is already in use`));
+          return;
+        }
+
+        if (retries >= MAX_PORT_RETRIES) {
+          onError(new Error(`Failed to find available port after ${MAX_PORT_RETRIES} retries (tried ${initialPort}-${currentPort})`));
+          return;
+        }
+
+        retries++;
+        currentPort++;
+        console.log(`Port ${currentPort - 1} in use, trying ${currentPort}...`);
+        tryListen();
+      } else {
+        onError(err);
+      }
+    });
+
+    server.listen(currentPort, "127.0.0.1", () => {
+      onSuccess(currentPort);
+    });
+  };
+
+  tryListen();
+}
+
 export const serve = new Command("serve")
   .description("Run osgrep as a background server with live indexing")
-  .option("-p, --port <port>", "Port to listen on", process.env.OSGREP_PORT || "4444")
+  .option("-p, --port <port>", "Port to listen on (auto-increments if not specified)")
+  .option("-b, --background", "Run server in background and exit")
   .option("--parent-pid <pid>", "Parent process ID to watch for auto-shutdown")
   .action(async (_args, cmd) => {
-    const options: { port: string; store?: string; parentPid?: string } = cmd.optsWithGlobals();
-    const port = parseInt(options.port, 10);
-    const parentPid = options.parentPid ? parseInt(options.parentPid, 10) : null;
+    const options: { port?: string; store?: string; parentPid?: string; background?: boolean } = cmd.optsWithGlobals();
     const root = process.cwd();
+
+    // Determine port: explicit > env > auto-increment from registry
+    // Returns [port, isAutoAssigned] to enable retry logic on EADDRINUSE
+    const resolvePort = async (): Promise<[number, boolean]> => {
+      if (options.port) {
+        return [parseInt(options.port, 10), false];
+      }
+      if (process.env.OSGREP_PORT) {
+        return [parseInt(process.env.OSGREP_PORT, 10), false];
+      }
+      return [await getNextAvailablePort(), true];
+    };
+
+    // Handle background mode: spawn detached process and exit
+    // For auto-assigned ports, we let the child process determine its own port with retry logic.
+    // This prevents race conditions when multiple servers start simultaneously.
+    if (options.background) {
+      const [suggestedPort, isAutoAssigned] = await resolvePort();
+      const args = ["serve"];
+
+      // Only pass explicit port if user specified it (no retry on EADDRINUSE)
+      // Auto-assigned ports let child retry with different ports if needed
+      if (!isAutoAssigned) {
+        args.push("-p", String(suggestedPort));
+      }
+      if (options.parentPid) {
+        args.push("--parent-pid", options.parentPid);
+      }
+
+      const child = spawn(process.execPath, [process.argv[1], ...args], {
+        detached: true,
+        stdio: "ignore",
+        cwd: root,
+      });
+      child.unref();
+
+      // Wait for the server to start and verify it's responding
+      const maxWaitMs = 10_000;
+      const pollIntervalMs = 200;
+      const startTime = Date.now();
+
+      let verified = false;
+      let actualPort: number | undefined;
+      while (Date.now() - startTime < maxWaitMs) {
+        // Check if lock file exists with auth token
+        const lock = await readServerLock(root);
+        // For auto-assigned ports, accept any port; for explicit ports, require exact match
+        const portMatches = isAutoAssigned || lock?.port === suggestedPort;
+        if (lock?.authToken && portMatches) {
+          // Verify the server is actually responding
+          const isRunning = await verifyOsgrepServer(lock.port, lock.authToken, 1000);
+          if (isRunning) {
+            verified = true;
+            actualPort = lock.port;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+
+      if (verified && actualPort) {
+        console.log(`osgrep serve started in background on port ${actualPort} (pid: ${child.pid})`);
+        process.exit(0);
+      } else {
+        const portInfo = isAutoAssigned ? "auto-assigned port" : `port ${suggestedPort}`;
+        console.error(`Failed to start osgrep server on ${portInfo}. Server did not respond within ${maxWaitMs / 1000}s.`);
+        // Try to clean up the child if it's still around
+        try {
+          if (child.pid) {
+            process.kill(child.pid, "SIGTERM");
+          }
+        } catch {
+          // Child may have already exited
+        }
+        process.exit(1);
+      }
+    }
+
+    const [initialPort, isPortAutoAssigned] = await resolvePort();
+    let port = initialPort; // May be updated by retry logic on EADDRINUSE
+    const parentPid = options.parentPid ? parseInt(options.parentPid, 10) : null;
     const authToken = randomUUID();
 
     let store: Store | null = null;
@@ -197,6 +341,11 @@ export const serve = new Command("serve")
         await clearServerLock(root);
       } catch (err) {
         console.error("Failed to clear server lock:", err);
+      }
+      try {
+        await unregisterServer(root);
+      } catch (err) {
+        console.error("Failed to unregister server:", err);
       }
       try {
         await watcher?.close();
@@ -485,13 +634,27 @@ export const serve = new Command("serve")
         return respondJson(res, 404, { error: "not_found" });
       });
 
-      server!.listen(port, "127.0.0.1", async () => {
-        await writeServerLock(port, process.pid, root, authToken);
-        const lock = await readServerLock(root);
-        console.log(
-          `osgrep serve listening on port ${port} (lock: ${lock?.pid ?? "n/a"})`,
-        );
-      });
+      listenWithRetry(
+        server!,
+        initialPort,
+        isPortAutoAssigned,
+        async (actualPort) => {
+          port = actualPort; // Update port in case retry changed it
+          await writeServerLock(port, process.pid, root, authToken);
+          await registerServer({ cwd: root, port, pid: process.pid, authToken });
+          const lock = await readServerLock(root);
+          console.log(
+            `osgrep serve listening on port ${port} (lock: ${lock?.pid ?? "n/a"})`,
+          );
+        },
+        async (error) => {
+          console.error(
+            "Failed to start osgrep server:",
+            error instanceof Error ? error.message : "Unknown error",
+          );
+          await shutdown();
+        },
+      );
     } catch (error) {
       console.error(
         "Failed to start osgrep server:",
@@ -500,3 +663,184 @@ export const serve = new Command("serve")
       await shutdown();
     }
   });
+
+/** Subcommand: Stop osgrep server(s). Verifies PID ownership before killing. */
+const stopCommand = new Command("stop")
+  .description("Stop the osgrep server")
+  .option("-a, --all", "Stop all running osgrep servers")
+  .action(async (_args, cmd) => {
+    const options: { all?: boolean } = cmd.optsWithGlobals();
+    const root = process.cwd();
+
+    if (options.all) {
+      // Stop all servers
+      const servers = await listAllServers();
+      if (servers.length === 0) {
+        console.log("No osgrep servers are running.");
+        return;
+      }
+
+      let stopped = 0;
+      let stale = 0;
+      let skipped = 0;
+      for (const entry of servers) {
+        if (!isProcessRunning(entry.pid)) {
+          stale++;
+          // Clean up lock file and registry entry for non-running process
+          try {
+            await clearServerLock(entry.cwd);
+          } catch (_err) {
+            // Ignore errors cleaning up lock files
+          }
+          try {
+            await unregisterServer(entry.cwd);
+          } catch (_err) {
+            // Ignore registry errors
+          }
+          continue;
+        }
+
+        // Verify this is actually an osgrep server before killing
+        // This prevents accidentally killing unrelated processes if PIDs were reused
+        const isOsgrep = await verifyOsgrepServer(entry.port, entry.authToken);
+        if (!isOsgrep) {
+          // Process exists but isn't our osgrep server - PID was likely reused
+          console.warn(
+            `Warning: PID ${entry.pid} exists but does not respond as osgrep server at ${entry.cwd}. ` +
+            `Skipping kill to avoid terminating unrelated process. Cleaning up stale registry entry.`
+          );
+          skipped++;
+          // Clean up stale lock file and registry entry
+          try {
+            await clearServerLock(entry.cwd);
+          } catch (_err) {
+            // Ignore errors cleaning up lock files
+          }
+          try {
+            await unregisterServer(entry.cwd);
+          } catch (_err) {
+            // Ignore registry errors
+          }
+          continue;
+        }
+
+        try {
+          process.kill(entry.pid, "SIGTERM");
+          stopped++;
+          console.log(`Stopped server at ${entry.cwd} (pid: ${entry.pid}, port: ${entry.port})`);
+        } catch (err) {
+          console.error(`Failed to stop server at ${entry.cwd}:`, err);
+        }
+        // Clean up lock file and registry entry
+        try {
+          await clearServerLock(entry.cwd);
+        } catch (_err) {
+          // Ignore errors cleaning up lock files
+        }
+        try {
+          await unregisterServer(entry.cwd);
+        } catch (_err) {
+          // Ignore registry errors
+        }
+      }
+
+      // Give servers time to clean up gracefully
+      if (stopped > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      if (stopped > 0) {
+        console.log(`\nStopped ${stopped} server(s).`);
+      }
+      if (stale > 0) {
+        console.log(`Cleaned up ${stale} stale registry entry/entries.`);
+      }
+      if (skipped > 0) {
+        console.log(`Skipped ${skipped} entry/entries with reused PIDs (not osgrep servers).`);
+      }
+    } else {
+      // Stop server in current directory
+      const lock = await readServerLock(root);
+      if (!lock) {
+        console.log("No osgrep server is running in this directory.");
+        return;
+      }
+
+      if (!isProcessRunning(lock.pid)) {
+        console.log(`Server lock exists but process (pid: ${lock.pid}) is not running. Cleaning up...`);
+        await clearServerLock(root);
+        await unregisterServer(root);
+        console.log("Cleaned up stale server lock.");
+        return;
+      }
+
+      // Verify this is actually an osgrep server before killing
+      // This prevents accidentally killing unrelated processes if PIDs were reused
+      const isOsgrep = await verifyOsgrepServer(lock.port, lock.authToken);
+      if (!isOsgrep) {
+        console.warn(
+          `Warning: PID ${lock.pid} exists but does not respond as osgrep server. ` +
+          `The PID may have been reused by another process. Cleaning up stale lock file.`
+        );
+        await clearServerLock(root);
+        await unregisterServer(root);
+        console.log("Cleaned up stale server lock without killing process.");
+        return;
+      }
+
+      try {
+        process.kill(lock.pid, "SIGTERM");
+        console.log(`Stopped osgrep server (pid: ${lock.pid}, port: ${lock.port})`);
+
+        // Give the server a moment to clean up gracefully
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        // Clean up if the server didn't (e.g., crashed before cleanup)
+        const stillExists = await readServerLock(root);
+        if (stillExists) {
+          await clearServerLock(root);
+          try {
+            await unregisterServer(root);
+          } catch {
+            // Ignore registry errors - server may have already cleaned up
+          }
+        }
+      } catch (err) {
+        console.error("Failed to stop server:", err);
+      }
+    }
+  });
+
+/** Subcommand: Show osgrep server status for current directory. */
+const statusCommand = new Command("status")
+  .description("Show osgrep server status")
+  .action(async () => {
+    const root = process.cwd();
+    const lock = await readServerLock(root);
+
+    if (!lock) {
+      console.log("No osgrep server is running in this directory.");
+      return;
+    }
+
+    const running = isProcessRunning(lock.pid);
+
+    if (running) {
+      console.log("osgrep server status:");
+      console.log(`  Directory: ${root}`);
+      console.log(`  Port:      ${lock.port}`);
+      console.log(`  PID:       ${lock.pid}`);
+      console.log(`  Status:    running`);
+    } else {
+      console.log("osgrep server status:");
+      console.log(`  Directory: ${root}`);
+      console.log(`  Port:      ${lock.port}`);
+      console.log(`  PID:       ${lock.pid}`);
+      console.log(`  Status:    not running (stale lock file)`);
+      console.log("\nRun 'osgrep serve stop' to clean up the stale lock file.");
+    }
+  });
+
+// Add subcommands to serve
+serve.addCommand(stopCommand);
+serve.addCommand(statusCommand);

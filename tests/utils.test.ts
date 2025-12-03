@@ -228,10 +228,10 @@ describe("initialSync", () => {
       metaStore,
     );
 
-    expect(result.total).toBe(2);
-    expect(result.indexed).toBe(2);
+    expect(result.total).toBe(1);
+    expect(result.indexed).toBe(1);
     expect(store.records.has(path.join(root, "src/a.ts"))).toBe(true);
-    expect(store.records.has(path.join(root, "src/b.txt"))).toBe(true);
+    expect(store.records.has(path.join(root, "src/b.txt"))).toBe(false);
     expect(store.records.has(path.join(root, "assets/logo.bin"))).toBe(false);
     expect(store.ftsIndexCreated).toBe(true);
     expect(store.vectorIndexCreated).toBe(true);

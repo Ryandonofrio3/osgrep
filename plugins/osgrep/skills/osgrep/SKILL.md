@@ -45,6 +45,18 @@ Returns: `path/to/file:line [Tags] Code Snippet`
 - `[Definition]`: Semantic search detected a class/function here. High relevance.
 - `...`: **Truncation Marker**. Snippet is incomplete—use `read_file` for full context.
 
+## Useful Options
+
+- `--scores` - Show relevance scores (0-1) for each result
+- `--min-score <n>` - Filter out low-confidence results (e.g., `--min-score 0.5`)
+- `-m <n>` - Limit max results (default: 10)
+- `--compact` - Show file paths only
+
+Example with filtering:
+```bash
+osgrep "authentication" --scores --min-score 0.5
+```
+
 ## Tips
 
 - **Trust the Semantics:** You don't need exact names. `osgrep "how does the server start"` works better than guessing `osgrep "server.init"`.

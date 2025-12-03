@@ -51,6 +51,9 @@ export class TreeSitterChunker {
   private readonly MAX_CHUNK_CHARS = 2000;
   private readonly OVERLAP_LINES = 10;
 
+  private readonly MAX_JSON_TREE_CHUNKS = 250;
+  private readonly MAX_TOTAL_CHUNKS = 750;
+
   // For long single-line or low-newline regions (json, lockfiles, huge strings)
   private readonly OVERLAP_CHARS = 200;
 
@@ -110,11 +113,27 @@ export class TreeSitterChunker {
       }
     }
 
+    const extLower = path.extname(filePath).toLowerCase();
+    if (extLower === ".json" && rawChunks.length > this.MAX_JSON_TREE_CHUNKS) {
+      console.warn(
+        `[chunker] ${filePath} produced ${rawChunks.length} JSON chunks, skipping file (too large)`,
+      );
+      return [];
+    }
+
     if (rawChunks.length === 0) {
       rawChunks = this.fallbackChunk(content, filePath);
     }
 
-    return rawChunks.flatMap((c) => this.splitIfTooBig(c));
+    const finalChunks = rawChunks.flatMap((c) => this.splitIfTooBig(c));
+    if (finalChunks.length > this.MAX_TOTAL_CHUNKS) {
+      console.warn(
+        `[chunker] ${filePath} produced ${finalChunks.length} chunks, skipping file (too large)`,
+      );
+      return [];
+    }
+
+    return finalChunks;
   }
 
   private async chunkWithTreeSitter(
@@ -140,6 +159,12 @@ export class TreeSitterChunker {
       ".rb": "ruby",
       ".php": "php",
       ".json": "json",
+      ".yaml": "yaml",
+      ".yml": "yaml",
+      ".kt": "kotlin",
+      ".kts": "kotlin",
+      ".swift": "swift",
+      ".dart": "dart",
     };
     lang = languageExtensions[ext] || "";
     if (!lang) return [];
@@ -201,6 +226,33 @@ export class TreeSitterChunker {
           "interface_declaration",
         ],
         json: ["pair"],
+        yaml: ["block_mapping_pair", "block_sequence"],
+        kotlin: [
+          "function_declaration",
+          "class_declaration",
+          "object_declaration",
+          "property_declaration",
+        ],
+        swift: [
+          "function_declaration",
+          "class_declaration",
+          "struct_declaration",
+          "enum_declaration",
+          "protocol_declaration",
+        ],
+        dart: [
+          "class_definition",
+          "enum_declaration",
+          "extension_declaration",
+          "mixin_declaration",
+          "type_alias",
+          "function_declaration",   // Top-level functions
+          "function_signature",     // Abstract methods
+          "method_signature",       // Interface methods  
+          "constructor_signature",  // Constructor signatures
+          "getter_signature",       // Getter signatures
+          "setter_signature",       // Setter signatures
+        ],
       };
 
       if (common.includes(t)) return true;

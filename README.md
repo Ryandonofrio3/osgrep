@@ -67,11 +67,14 @@ osgrep "how is the database connection pooled?"
 ```
 
 **Options:**
+
 | Flag | Description | Default |
 | --- | --- | --- |
 | `-m <n>` | Max total results to return. | `25` |
 | `--per-file <n>` | Max matches to show per file. | `1` |
 | `-c`, `--content` | Show full chunk content instead of snippets. | `false` |
+| `--scores` | Show relevance scores (0-1) for each result. | `false` |
+| `--min-score <n>` | Filter out results below this score threshold. | `0` |
 | `--compact` | Show file paths only (like `grep -l`). | `false` |
 | `-s`, `--sync` | Force re-index changed files before searching. | `false` |
 | `-r`, `--reset` | Reset the index and re-index from scratch. | `false` |
@@ -87,6 +90,9 @@ osgrep "error handling" --per-file 5
 
 # Just give me the files
 osgrep "user validation" --compact
+
+# Show relevance scores and filter low-confidence matches
+osgrep "authentication" --scores --min-score 0.5
 ```
 
 ### `osgrep index`
@@ -96,10 +102,26 @@ Manually indexes the repository. Useful if you want to pre-warm the cache or if 
 - Respects `.gitignore` and `.osgrepignore` (see [Configuration](#ignoring-files) section).
 - **Smart Indexing:** Only embeds code and config files. Skips binaries, lockfiles, and minified assets.
 - **Bounded Concurrency:** Uses a fixed thread pool to keep your system responsive.
+- **Semantic Chunking:** Uses TreeSitter grammars for supported languages (TypeScript, JavaScript, Python, Go, Rust, C/C++, Java, C#, Ruby, PHP, JSON, YAML, Kotlin, Swift, Dart).
+
+**Options:**
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `-d`, `--dry-run` | See what would be indexed without making changes. | `false` |
+| `-p`, `--path <dir>` | Path to index (defaults to current directory). | `.` |
+| `-r`, `--reset` | Remove existing index and re-index from scratch. | `false` |
+| `-v`, `--verbose` | Show detailed progress with file names. | `false` |
+| `--allow-fallback` | Also index files without TreeSitter grammar support. | `false` |
+
+**Examples:**
 
 ```bash
-osgrep index              # Index current dir
-osgrep index --dry-run    # See what would be indexed
+osgrep index                    # Index current dir
+osgrep index --dry-run          # See what would be indexed
+osgrep index --verbose          # Watch detailed progress (useful for debugging)
+osgrep index --allow-fallback   # Include files without grammar support
+osgrep index --reset            # Full re-index from scratch
 ```
 
 ### `osgrep serve`
@@ -112,11 +134,46 @@ Runs a lightweight HTTP server with live file watching so searches stay hot in R
 - Search endpoint: `POST /search` with `{ query, limit, path, rerank }`
 - Writes lock: `.osgrep/server.json` with `port`/`pid`
 
-Usage:
+**Options:**
+
+| Flag | Description |
+| --- | --- |
+| `-p, --port <port>` | Port to listen on (auto-increments if not specified) |
+| `-b, --background` | Run server in background and exit immediately |
+
+**Port Selection (priority order):**
+1. Explicit `-p <port>` flag
+2. `OSGREP_PORT` environment variable
+3. Auto-increment from registry (last used port + 1, or 4444 if no servers)
+
+**Usage:**
 
 ```bash
-osgrep serve             # defaults to port 4444
-OSGREP_PORT=5555 osgrep serve
+osgrep serve                    # Foreground, port 4444 (or next available)
+osgrep serve --background       # Background mode, auto port
+osgrep serve -b -p 5000         # Background on specific port
+```
+
+**Subcommands:**
+
+```bash
+osgrep serve status             # Show server status for current directory
+osgrep serve stop               # Stop server in current directory
+osgrep serve stop --all         # Stop all running osgrep servers
+```
+
+**Example workflow:**
+
+```bash
+# Start servers in multiple projects
+cd ~/project-a && osgrep serve -b    # Starts on port 4444
+cd ~/project-b && osgrep serve -b    # Starts on port 4445 (auto-increment)
+
+# Check status
+osgrep serve status
+
+# Stop all when done
+osgrep serve stop --all
 ```
 
 Claude Code hooks start/stop this automatically; you rarely need to run it manually.
@@ -184,10 +241,10 @@ osgrep respects both `.gitignore` and `.osgrepignore` files when indexing. Creat
 
 ### Manual Store Management
 
-  - **View all stores:** `osgrep list`
-  - **Override auto-detection:** `osgrep --store custom-name "query"`
-  - **Clean up old stores:** `rm -rf ~/.osgrep/data/store-name`
-  - **Data location:** `~/.osgrep/data`
+- **View all stores:** `osgrep list`
+- **Override auto-detection:** `osgrep --store custom-name "query"`
+- **Clean up old stores:** `rm -rf ~/.osgrep/data/store-name`
+- **Data location:** `~/.osgrep/data`
 
 ## Development
 
@@ -199,9 +256,11 @@ pnpm format       # biome check
 
 ## Troubleshooting
 
-  - **Index feels stale?** Run `osgrep index` to refresh.
-  - **Weird results?** Run `osgrep doctor` to verify models.
-  - **Need a fresh start?** Delete `~/.osgrep/data` and `~/.osgrep/meta.json` and run `osgrep index`.
+- **Index feels stale?** Run `osgrep index` to refresh.
+- **Weird results?** Run `osgrep doctor` to verify models.
+- **Index getting stuck?** Run `osgrep index --verbose` to see which file is being processed.
+- **Want faster indexing?** Keep fallback disabled (default) to skip files without TreeSitter support.
+- **Need a fresh start?** Delete `~/.osgrep/data` and `~/.osgrep/meta.json` and run `osgrep index`.
 
 ## Attribution
 

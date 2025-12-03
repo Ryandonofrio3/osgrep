@@ -2,7 +2,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import { v4 as uuidv4 } from "uuid";
-import { MAX_WORKER_MEMORY_MB, WORKER_TIMEOUT_MS } from "../config";
+import {
+  MAX_WORKER_MEMORY_MB,
+  WORKER_BOOT_TIMEOUT_MS,
+  WORKER_TIMEOUT_MS,
+} from "../config";
+
+const PROFILE =
+  process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
 
 type WorkerRequest =
   | { id: string; hybrid: { texts: string[] } }
@@ -26,6 +33,7 @@ export class WorkerManager {
   private lastRequestId: string | null = null; // Track current request
   private requestsSinceRecycle = 0;
   private readonly RECYCLE_THRESHOLD = 100;
+  private workerBooted = false;
 
   private getWorkerConfig(): { workerPath: string; execArgv: string[] } {
     const tsWorkerPath = path.join(__dirname, "worker.ts");
@@ -44,6 +52,7 @@ export class WorkerManager {
   private createWorker(): Worker {
     const { workerPath, execArgv } = this.getWorkerConfig();
     const worker = new Worker(workerPath, { execArgv });
+    this.workerBooted = false;
 
     worker.on("message", (message) => this.handleMessage(message));
     worker.on("error", (err) => {
@@ -70,6 +79,7 @@ export class WorkerManager {
       // Only clear if it matches our current worker (avoid race if we already spawned a new one)
       if (this.worker === worker) {
         this.worker = null;
+        this.workerBooted = false;
       }
     });
 
@@ -115,6 +125,7 @@ export class WorkerManager {
     // 1. Remove listeners so we don't trigger "crash" logic
     const oldWorker = this.worker;
     this.worker = null; // Next request will spawn new one
+    this.workerBooted = false;
     oldWorker.removeAllListeners();
 
     // 2. Gracefully terminate
@@ -134,6 +145,14 @@ export class WorkerManager {
     else pending.resolve(undefined);
 
     this.pendingRequests.delete(id);
+
+    // First successful message marks worker as booted
+    if (!this.workerBooted) {
+      if (PROFILE) {
+        console.log(`[WorkerManager] Worker booted successfully (req ${id})`);
+      }
+      this.workerBooted = true;
+    }
 
     // Reset recycle counter on success
     if (id === this.lastRequestId) {
@@ -208,7 +227,12 @@ export class WorkerManager {
         lastError = err instanceof Error ? err : new Error(String(err));
         console.warn(`[WorkerManager] Request failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${lastError.message}`);
 
-        // If it was a timeout, we already killed the worker in attemptWorkerRequest.
+        // If it was a timeout, we ALREADY killed the worker.
+        // DO NOT RETRY TIMEOUTS. It's likely a poison pill payload.
+        if (lastError.message.includes("timed out")) {
+          throw lastError;
+        }
+
         // If it was a crash, the exit handler cleared this.worker.
         // So next attempt will automatically spawn a new worker.
 
@@ -227,18 +251,37 @@ export class WorkerManager {
     const worker = this.ensureWorker();
     const id = uuidv4();
     const message = buildPayload(id);
+    const timeoutMs = this.workerBooted
+      ? WORKER_TIMEOUT_MS
+      : WORKER_BOOT_TIMEOUT_MS;
+
+    if (PROFILE) {
+      console.log(
+        `[WorkerManager] Sending request ${id} (booted=${this.workerBooted}, timeout=${timeoutMs}ms)`,
+      );
+    }
 
     return new Promise<T>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         const pending = this.pendingRequests.get(id);
         if (pending) {
+          console.error(
+            `[WorkerManager] Request ${id} timed out after ${timeoutMs}ms. Booted: ${this.workerBooted}`,
+          );
           this.pendingRequests.delete(id);
-          const err = new Error(`Worker request timed out after ${WORKER_TIMEOUT_MS}ms`);
+          const err = new Error(
+            `Worker request timed out after ${timeoutMs}ms`,
+          );
           reject(err);
           // If it timed out, the worker is likely stuck. Kill it.
-          this.recycleWorker("Request timeout");
+          this.recycleWorker("Request timeout", id).catch((err) =>
+            console.warn("[WorkerManager] Failed to recycle worker on timeout:", err),
+          );
         }
-      }, WORKER_TIMEOUT_MS);
+      }, timeoutMs);
+
+      // Disable timeout recycling for the very first cold-boot request if explicitly desired?
+      // For now, we trust the 5-minute BOOT_TIMEOUT to be enough.
 
       this.pendingRequests.set(id, {
         resolve: resolve as (value: unknown) => void,
@@ -266,6 +309,12 @@ export class WorkerManager {
     text: string,
   ): Promise<{ dense: number[]; colbert: number[][]; colbertDim: number }> {
     return this.sendToWorker((id) => ({ id, query: { text } }));
+  }
+
+  async warmup(): Promise<void> {
+    if (this.workerBooted) return;
+    // Send a dummy request to trigger model loading
+    await this.computeHybrid(["warmup"]);
   }
 
   async close(): Promise<void> {

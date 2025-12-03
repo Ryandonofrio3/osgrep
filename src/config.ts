@@ -15,6 +15,11 @@ export const WORKER_TIMEOUT_MS = Number.parseInt(
   10,
 );
 
+export const WORKER_BOOT_TIMEOUT_MS = Number.parseInt(
+  process.env.OSGREP_WORKER_BOOT_TIMEOUT_MS || "300000",
+  10,
+);
+
 export const MAX_WORKER_MEMORY_MB = Number.parseInt(
   process.env.OSGREP_MAX_WORKER_MEMORY_MB ||
   String(

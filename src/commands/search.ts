@@ -55,6 +55,7 @@ export const search: Command = new CommanderCommand("search")
     "1",
   )
   .option("--scores", "Show relevance scores", false)
+  .option("--min-score <score>", "Minimum relevance score (0-1) to include in results", "0")
   .option("--compact", "Show file paths only", false)
   .option("--plain", "Disable ANSI colors and use simpler formatting", false)
   .option(
@@ -78,6 +79,7 @@ export const search: Command = new CommanderCommand("search")
       content: boolean;
       perFile: string;
       scores: boolean;
+      minScore: string;
       compact: boolean;
       plain: boolean;
       sync: boolean;
@@ -163,10 +165,15 @@ export const search: Command = new CommanderCommand("search")
           rehydratedResults as SearchResponse["data"],
         );
 
-        const output = formatTextResults(mappedResults, pattern, root, {
+        // Filter by minimum score
+        const minScore = parseFloat(options.minScore) || 0;
+        const filteredResults = mappedResults.filter((r) => r.score >= minScore);
+
+        const output = formatTextResults(filteredResults, pattern, root, {
           isPlain: shouldBePlain,
           compact: options.compact,
           content: options.content,
+          scores: options.scores,
         });
         console.log(output);
         return true;
@@ -315,10 +322,16 @@ export const search: Command = new CommanderCommand("search")
 
       // Render Output
       const mappedResults: TextResult[] = toTextResults(results.data);
-      const output = formatTextResults(mappedResults, pattern, root, {
+
+      // Filter by minimum score
+      const minScore = parseFloat(options.minScore) || 0;
+      const filteredResults = mappedResults.filter((r) => r.score >= minScore);
+
+      const output = formatTextResults(filteredResults, pattern, root, {
         isPlain: shouldBePlain,
         compact: options.compact,
         content: options.content,
+        scores: options.scores,
       });
 
       console.log(output);

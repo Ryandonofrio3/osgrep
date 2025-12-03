@@ -678,7 +678,10 @@ export class LocalStore implements Store {
     };
 
     const reranked = candidatesToRerank.map((doc) => {
-      const denseVec = Array.isArray(doc.vector) ? (doc.vector as number[]) : [];
+      // Handle both regular arrays and typed arrays (Float32Array from LanceDB)
+      const denseVec = doc.vector && typeof doc.vector === "object" && "length" in doc.vector
+        ? Array.from(doc.vector as ArrayLike<number>)
+        : [];
       let score = cosineSim(queryVector, denseVec);
 
       if (
@@ -733,11 +736,19 @@ export class LocalStore implements Store {
       return { record: doc, score };
     });
 
+    // Normalize scores: map [0.65, 1.0] → [0, 1] so noise/irrelevant results score near 0
+    const SCORE_FLOOR = 0.65; // Below this is essentially noise
+    const SCORE_CEILING = 1.0; // Perfect semantic match
+    const normalizeScore = (s: number): number => {
+      const normalized = (s - SCORE_FLOOR) / (SCORE_CEILING - SCORE_FLOOR);
+      return Math.max(0, Math.min(1, normalized)); // Clamp to [0, 1]
+    };
+
     return {
       data: reranked
         .sort((a, b) => b.score - a.score)
         .slice(0, finalLimit)
-        .map((x) => this.mapRecordToChunk(x.record, x.score)),
+        .map((x) => this.mapRecordToChunk(x.record, normalizeScore(x.score))),
     };
   }
 

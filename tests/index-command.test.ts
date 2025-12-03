@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const fakeGit = {
+  isWorktree: vi.fn(() => false),
+  getMainRepoRoot: vi.fn(() => null),
+};
+
 vi.mock("../src/lib/context", () => {
   return {
     createStore: vi.fn(async () => fakeStore),
     createFileSystem: vi.fn(() => fakeFileSystem),
+    createGit: vi.fn(() => fakeGit),
   };
 });
 

@@ -4,6 +4,7 @@ import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns";
 import { ensureSetup } from "../lib/setup-helpers";
 import { ensureStoreExists } from "../lib/store-helpers";
 import { getAutoStoreId } from "../lib/store-resolver";
+import { createGit } from "../lib/context";
 import {
   createIndexingSpinner,
   formatDryRunSummary,
@@ -44,7 +45,16 @@ export const index = new Command("index")
       store = await createStore();
 
       // Auto-detect store ID if not explicitly provided
-      const indexRoot = options.path || process.cwd();
+      // If in a worktree, resolve to main repo so we index the shared codebase
+      let indexRoot = options.path || process.cwd();
+      const git = createGit();
+      if (git.isWorktree(indexRoot)) {
+        const mainRoot = git.getMainRepoRoot(indexRoot);
+        if (mainRoot) {
+          console.log(`Detected git worktree. Indexing main repository at: ${mainRoot}`);
+          indexRoot = mainRoot;
+        }
+      }
       const storeId = options.store || getAutoStoreId(indexRoot);
 
       // Handle --reset flag: delete existing store and metadata before re-indexing

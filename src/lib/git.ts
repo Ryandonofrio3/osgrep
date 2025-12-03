@@ -99,6 +99,25 @@ export interface Git {
    * Returns null if no remote is configured
    */
   getRemoteUrl(dir: string): string | null;
+
+  /**
+   * Gets the git common directory (shared .git folder)
+   * In main repo: Returns the .git directory path
+   * In worktree: Returns the main repo's .git directory path
+   */
+  getGitCommonDir(dir: string): string | null;
+
+  /**
+   * Checks if the directory is inside a git worktree (not the main repo)
+   * Returns true if in a linked worktree, false if in main repo or not a git repo
+   */
+  isWorktree(dir: string): boolean;
+
+  /**
+   * Gets the main repository root from a worktree
+   * Returns the main repo root path, or null if not in a worktree
+   */
+  getMainRepoRoot(dir: string): string | null;
 }
 
 /**
@@ -112,6 +131,8 @@ export class NodeGit implements Git {
   >();
   private gitRootCache = new Map<string, string | null>();
   private gitRemoteCache = new Map<string, string | null>();
+  private gitCommonDirCache = new Map<string, string | null>();
+  private gitDirCache = new Map<string, string | null>();
 
   isGitRepository(dir: string): boolean {
     const normalizedDir = path.resolve(dir);
@@ -283,5 +304,104 @@ export class NodeGit implements Git {
 
     this.gitRemoteCache.set(normalizedDir, remote);
     return remote;
+  }
+
+  /**
+   * Gets the git directory using `git rev-parse --git-dir`
+   * Returns the path to the .git directory (or file in worktrees)
+   */
+  private getGitDir(dir: string): string | null {
+    const normalizedDir = path.resolve(dir);
+
+    const cached = this.gitDirCache.get(normalizedDir);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    let gitDir: string | null = null;
+    try {
+      const result = spawnSync("git", ["rev-parse", "--git-dir"], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      if (result.status === 0 && !result.error && result.stdout) {
+        const rawPath = result.stdout.trim();
+        gitDir = path.isAbsolute(rawPath)
+          ? rawPath
+          : path.resolve(dir, rawPath);
+      }
+    } catch {
+      gitDir = null;
+    }
+
+    this.gitDirCache.set(normalizedDir, gitDir);
+    return gitDir;
+  }
+
+  /**
+   * Gets the git common directory using `git rev-parse --git-common-dir`
+   * In main repo: Returns the same as --git-dir
+   * In worktree: Returns the main repo's .git directory
+   */
+  getGitCommonDir(dir: string): string | null {
+    const normalizedDir = path.resolve(dir);
+
+    const cached = this.gitCommonDirCache.get(normalizedDir);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    let commonDir: string | null = null;
+    try {
+      const result = spawnSync("git", ["rev-parse", "--git-common-dir"], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      if (result.status === 0 && !result.error && result.stdout) {
+        const rawPath = result.stdout.trim();
+        commonDir = path.isAbsolute(rawPath)
+          ? rawPath
+          : path.resolve(dir, rawPath);
+      }
+    } catch {
+      commonDir = null;
+    }
+
+    this.gitCommonDirCache.set(normalizedDir, commonDir);
+    return commonDir;
+  }
+
+  /**
+   * Checks if directory is in a git worktree (not the main repository)
+   * Detection: --git-common-dir != --git-dir means we're in a worktree
+   */
+  isWorktree(dir: string): boolean {
+    const gitDir = this.getGitDir(dir);
+    const commonDir = this.getGitCommonDir(dir);
+
+    if (!gitDir || !commonDir) {
+      return false;
+    }
+
+    return gitDir !== commonDir;
+  }
+
+  /**
+   * Gets the main repository root from a worktree
+   * The common dir points to main-repo/.git, so parent is main repo root
+   */
+  getMainRepoRoot(dir: string): string | null {
+    if (!this.isWorktree(dir)) {
+      return null;
+    }
+
+    const commonDir = this.getGitCommonDir(dir);
+    if (!commonDir) {
+      return null;
+    }
+
+    // commonDir is like /path/to/main-repo/.git
+    // Parent directory is the main repo root
+    return path.dirname(commonDir);
   }
 }

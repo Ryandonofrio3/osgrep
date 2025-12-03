@@ -19,9 +19,15 @@ const mockFileSystem = {
   loadOsgrepignore: () => { },
 };
 
+const mockGit = {
+  isWorktree: vi.fn(() => false),
+  getMainRepoRoot: vi.fn(() => null),
+};
+
 vi.mock("../src/lib/context", () => ({
   createStore: vi.fn(async () => mockStore),
   createFileSystem: vi.fn(() => mockFileSystem),
+  createGit: vi.fn(() => mockGit),
 }));
 
 vi.mock("../src/lib/setup-helpers", () => ({
@@ -35,6 +41,7 @@ vi.mock("../src/lib/store-helpers", () => ({
 
 vi.mock("../src/lib/store-resolver", () => ({
   getAutoStoreId: vi.fn(() => "auto-store"),
+  resolveStoreIdWithWorktree: vi.fn(() => "auto-store"),
 }));
 
 vi.mock("../src/lib/sync-helpers", () => ({

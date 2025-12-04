@@ -53,25 +53,47 @@ export const serve = new Command("serve")
 
           if (req.method === "POST" && req.url === "/search") {
             const chunks: Buffer[] = [];
+            let totalSize = 0;
+            let aborted = false;
+
             req.on("data", (chunk) => {
-              chunks.push(chunk);
-              const size = Buffer.concat(chunks).length;
-              if (size > 1_000_000) {
+              if (aborted) return;
+              totalSize += chunk.length;
+              if (totalSize > 1_000_000) {
+                aborted = true;
                 res.statusCode = 413;
                 res.setHeader("Content-Type", "application/json");
                 res.end(JSON.stringify({ error: "payload_too_large" }));
                 req.destroy();
+                return;
               }
+              chunks.push(chunk);
             });
+
             req.on("end", async () => {
+              if (aborted) return;
               try {
                 const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf-8")) : {};
                 const query = typeof body.query === "string" ? body.query : "";
                 const limit = typeof body.limit === "number" ? body.limit : 10;
-                const searchPath =
-                  typeof body.path === "string"
-                    ? path.relative(projectRoot, path.resolve(projectRoot, body.path))
-                    : "";
+
+                let searchPath = "";
+                if (typeof body.path === "string") {
+                  const resolvedPath = path.resolve(projectRoot, body.path);
+                  const rootPrefix = projectRoot.endsWith(path.sep)
+                    ? projectRoot
+                    : `${projectRoot}${path.sep}`;
+                  if (
+                    resolvedPath !== projectRoot &&
+                    !resolvedPath.startsWith(rootPrefix)
+                  ) {
+                    res.statusCode = 400;
+                    res.setHeader("Content-Type", "application/json");
+                    res.end(JSON.stringify({ error: "invalid_path" }));
+                    return;
+                  }
+                  searchPath = path.relative(projectRoot, resolvedPath);
+                }
 
                 const result = await searcher.search(
                   query,
@@ -90,6 +112,12 @@ export const serve = new Command("serve")
                 res.end(JSON.stringify({ error: (err as Error)?.message || "search_failed" }));
               }
             });
+            
+            req.on("error", (err) => {
+              console.error("[serve] request error:", err);
+              aborted = true;
+            });
+            
             return;
           }
 
@@ -97,9 +125,11 @@ export const serve = new Command("serve")
           res.end();
         } catch (err) {
           console.error("[serve] request handler error:", err);
-          res.statusCode = 500;
-          res.setHeader("Content-Type", "application/json");
-          res.end(JSON.stringify({ error: "internal_error" }));
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "internal_error" }));
+          }
         }
       });
 

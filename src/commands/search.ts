@@ -91,8 +91,8 @@ export const search: Command = new CommanderCommand("search")
       vectorDb = new VectorDB(paths.lancedbDir);
       const searcher = new Searcher(vectorDb);
 
-      const existing = await vectorDb.listPaths();
-      const needsSync = options.sync || existing.size === 0;
+      const hasRows = await vectorDb.hasAnyRows();
+      const needsSync = options.sync || !hasRows;
       let didSync = false;
 
       if (needsSync) {
@@ -142,8 +142,9 @@ export const search: Command = new CommanderCommand("search")
           }
 
           await vectorDb.createFTSIndex();
+          const failedSuffix = result.failedFiles > 0 ? ` • ${result.failedFiles} failed` : "";
           spinner.succeed(
-            `${options.sync ? "Indexing" : "Initial indexing"} complete (${result.processed}/${result.total}) • indexed ${result.indexed}`,
+            `${options.sync ? "Indexing" : "Initial indexing"} complete (${result.processed}/${result.total}) • indexed ${result.indexed}${failedSuffix}`,
           );
           didSync = true;
         } catch (e) {

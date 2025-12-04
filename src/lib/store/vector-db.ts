@@ -182,6 +182,13 @@ export class VectorDB {
     }
   }
 
+  async hasAnyRows(): Promise<boolean> {
+    const table = await this.ensureTable();
+    const rows = await table.query().select(["id"]).limit(1).toArray();
+    return rows.length > 0;
+  }
+
+  // Deprecated for full scans, kept for legacy if needed but discouraged
   async listPaths(): Promise<Map<string, string | undefined>> {
     const table = await this.ensureTable();
     const results = (await table

@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { Command } from "commander";
 import { ensureSetup } from "../lib/setup/setup-helpers";
@@ -32,6 +31,7 @@ export const index = new Command("index")
   .action(async (_args, cmd) => {
     const options: { store?: string; dryRun: boolean; path: string; reset: boolean } =
       cmd.optsWithGlobals();
+    let vectorDb: VectorDB | null = null;
 
     try {
       await ensureSetup();
@@ -40,15 +40,12 @@ export const index = new Command("index")
         : process.cwd();
       const projectRoot = findProjectRoot(indexRoot) ?? indexRoot;
       const paths = ensureProjectPaths(projectRoot);
-      const vectorDb = new VectorDB(paths.lancedbDir);
+      vectorDb = new VectorDB(paths.lancedbDir);
 
       if (options.reset) {
-        console.log(`Resetting index at ${paths.osgrepDir}`);
-        await vectorDb.drop();
-        try {
-          fs.rmSync(paths.lmdbPath, { force: true });
-        } catch { }
-        console.log("Existing index removed. Re-indexing...");
+        console.log(`Resetting index at ${paths.osgrepDir} (waiting for lock)...`);
+        // We do NOT manually drop/rm here anymore to avoid race conditions.
+        // The syncer handles it inside the lock.
       }
 
       // Ensure grammars are present before indexing (silent if already exist)
@@ -62,6 +59,7 @@ export const index = new Command("index")
         const result = await initialSync({
           projectRoot,
           dryRun: options.dryRun,
+          reset: options.reset,
           onProgress,
         });
 
@@ -81,8 +79,9 @@ export const index = new Command("index")
         spinner.text = "Building search index (FTS)...";
         await vectorDb.createFTSIndex();
 
+        const failedSuffix = result.failedFiles > 0 ? ` • ${result.failedFiles} failed` : "";
         spinner.succeed(
-          `Indexing complete (${result.processed}/${result.total}) • indexed ${result.indexed}`,
+          `Indexing complete (${result.processed}/${result.total}) • indexed ${result.indexed}${failedSuffix}`,
         );
       } catch (e) {
         spinner.fail("Indexing failed");
@@ -93,6 +92,13 @@ export const index = new Command("index")
       console.error("Failed to index:", message);
       process.exitCode = 1;
     } finally {
+      if (vectorDb) {
+        try {
+          await vectorDb.close();
+        } catch (err) {
+          console.error("Failed to close VectorDB:", err);
+        }
+      }
       const code =
         typeof process.exitCode === "number" ? process.exitCode : process.exitCode === undefined ? 0 : 1;
       await gracefulExit(code);

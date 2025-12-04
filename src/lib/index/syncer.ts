@@ -19,6 +19,7 @@ import { acquireWriterLock, type LockHandle } from "../utils/lock";
 type SyncOptions = {
   projectRoot: string;
   dryRun?: boolean;
+  reset?: boolean;
   onProgress?: (info: InitialSyncProgress) => void;
   signal?: AbortSignal;
 };
@@ -62,17 +63,30 @@ export async function initialSync(options: SyncOptions): Promise<InitialSyncResu
   const {
     projectRoot,
     dryRun = false,
+    reset = false,
     onProgress,
     signal,
   } = options;
   const paths = ensureProjectPaths(projectRoot);
   let lock: LockHandle | null = null;
   const vectorDb = new VectorDB(paths.lancedbDir);
-  const metaCache = new MetaCache(paths.lmdbPath);
+  let metaCache = new MetaCache(paths.lmdbPath);
   const ignoreFilter = buildIgnoreFilter(paths.root);
+  const treatAsEmptyCache = reset && dryRun;
 
   try {
     lock = await acquireWriterLock(paths.osgrepDir);
+
+    // CRITICAL: Handle reset INSIDE the lock to prevent corruption
+    if (reset && !dryRun) {
+      await vectorDb.drop();
+
+      metaCache.close();
+      try {
+        fs.rmSync(paths.lmdbPath, { force: true });
+      } catch { }
+      metaCache = new MetaCache(paths.lmdbPath);
+    }
 
     const globOptions: GlobOptions = {
       cwd: paths.root,
@@ -85,12 +99,13 @@ export async function initialSync(options: SyncOptions): Promise<InitialSyncResu
       globstar: true,
     };
 
-    // Total is unknown in streaming mode; report processed count only.
     let total = 0;
     onProgress?.({ processed: 0, indexed: 0, total, filePath: "Scanning..." });
 
     const pool = getWorkerPool();
-    const cachedPaths = await metaCache.getAllKeys();
+    const cachedPaths = treatAsEmptyCache
+      ? new Set<string>()
+      : await metaCache.getAllKeys();
     const seenPaths = new Set<string>();
     const batch: VectorRecord[] = [];
     const pendingMeta = new Map<string, MetaEntry>();
@@ -183,7 +198,7 @@ export async function initialSync(options: SyncOptions): Promise<InitialSyncResu
             return;
           }
 
-          const cached = metaCache.get(relPath);
+          const cached = treatAsEmptyCache ? undefined : metaCache.get(relPath);
 
           if (
             cached &&

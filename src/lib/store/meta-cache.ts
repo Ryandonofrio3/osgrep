@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { open, type RootDatabase } from "lmdb";
+import { registerCleanup } from "../utils/cleanup";
 
 export type MetaEntry = {
   hash: string;
@@ -10,6 +11,8 @@ export type MetaEntry = {
 
 export class MetaCache {
   private db: RootDatabase<MetaEntry>;
+  private unregisterCleanup?: () => void;
+  private closed = false;
 
   constructor(lmdbPath: string) {
     fs.mkdirSync(path.dirname(lmdbPath), { recursive: true });
@@ -17,6 +20,7 @@ export class MetaCache {
       path: lmdbPath,
       compression: true,
     });
+    this.unregisterCleanup = registerCleanup(() => this.close());
   }
 
   get(filePath: string): MetaEntry | undefined {
@@ -39,6 +43,10 @@ export class MetaCache {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.unregisterCleanup?.();
+    this.unregisterCleanup = undefined;
     this.db.close();
   }
 }

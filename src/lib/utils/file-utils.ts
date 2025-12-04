@@ -58,6 +58,14 @@ export function computeBufferHash(buffer: Buffer): string {
     return createHash("sha256").update(buffer).digest("hex");
 }
 
+export function hasNullByte(buffer: Buffer, sampleLength = 1024): boolean {
+    const length = Math.min(buffer.length, sampleLength);
+    for (let i = 0; i < length; i++) {
+        if (buffer[i] === 0) return true;
+    }
+    return false;
+}
+
 export function computeFileHash(
     filePath: string,
     readFileSyncFn: (p: string) => Buffer,

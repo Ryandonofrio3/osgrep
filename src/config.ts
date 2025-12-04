@@ -10,7 +10,11 @@ const DEFAULT_WORKER_THREADS = (() => {
   const fromEnv = Number.parseInt(process.env.OSGREP_WORKER_THREADS ?? "", 10);
   if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
   const cores = os.cpus().length || 1;
-  return Math.max(1, Math.min(cores, 4));
+  const isAppleSilicon = process.platform === "darwin" && process.arch === "arm64";
+  if (isAppleSilicon) {
+    return Math.max(1, Math.floor(cores / 2));
+  }
+  return Math.max(1, cores);
 })();
 
 export const CONFIG = {

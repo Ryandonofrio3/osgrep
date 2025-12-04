@@ -4,6 +4,7 @@ import { Command } from "commander";
 import { ensureSetup } from "../lib/setup/setup-helpers";
 import { ensureGrammars } from "../lib/index/grammar-loader";
 import { ensureProjectPaths, findProjectRoot } from "../lib/utils/project-root";
+import { gracefulExit } from "../lib/utils/exit";
 import { VectorDB } from "../lib/store/vector-db";
 import { Searcher } from "../lib/search/searcher";
 import { initialSync } from "../lib/index/syncer";
@@ -101,7 +102,7 @@ export const serve = new Command("serve")
 
       const shutdown = async () => {
         server.close();
-        process.exit(0);
+        await gracefulExit();
       };
 
       process.on("SIGINT", shutdown);
@@ -110,5 +111,6 @@ export const serve = new Command("serve")
       const message = error instanceof Error ? error.message : "Unknown error";
       console.error("Serve failed:", message);
       process.exitCode = 1;
+      await gracefulExit(1);
     }
   });

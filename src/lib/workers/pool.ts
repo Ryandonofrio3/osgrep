@@ -20,6 +20,7 @@ function resolveWorkerModule(): { filename: string; execArgv: string[] } {
 
 export class WorkerPool {
   private pool: Piscina;
+  private destroyed = false;
 
   constructor() {
     const { filename, execArgv } = resolveWorkerModule();
@@ -48,6 +49,8 @@ export class WorkerPool {
   }
 
   async destroy(): Promise<void> {
+    if (this.destroyed) return;
+    this.destroyed = true;
     await this.pool.destroy();
   }
 }

@@ -32,14 +32,8 @@ type RerankDoc = {
   scale: number;
 };
 
-function resolveThreadCount(): number {
-  const fromEnv = Number.parseInt(process.env.OSGREP_THREADS ?? "", 10);
-  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
-  return CONFIG.WORKER_THREADS;
-}
-
 const CACHE_DIR = PATHS.models;
-const NUM_THREADS = resolveThreadCount();
+const ONNX_THREADS = 1;
 const LOG_MODELS =
   process.env.OSGREP_DEBUG_MODELS === "1" ||
   process.env.OSGREP_DEBUG_MODELS === "true";
@@ -98,7 +92,7 @@ class WorkerRuntime {
 
     const sessionOptions: ort.InferenceSession.SessionOptions = {
       executionProviders: ["cpu"],
-      intraOpNumThreads: NUM_THREADS,
+      intraOpNumThreads: ONNX_THREADS,
       interOpNumThreads: 1,
       graphOptimizationLevel: "all",
     };
@@ -110,33 +104,33 @@ class WorkerRuntime {
 
     this.colbertTokenizer = new ColBERTTokenizer();
 
-    let modelPath = "";
-    let tokenizerPath = "";
+    const basePath = path.join(CACHE_DIR, MODEL_IDS.colbert);
+    const onnxDir = path.join(basePath, "onnx");
+    const candidates = ["model.onnx", "model_quantized.onnx", "model_q4.onnx"];
+    const resolved = candidates
+      .map((name) => path.join(onnxDir, name))
+      .find((candidate) => fs.existsSync(candidate));
 
-    const prodPath = path.join(CACHE_DIR, MODEL_IDS.colbert, "onnx", "model.onnx");
-    if (fs.existsSync(prodPath)) {
-      modelPath = prodPath;
-      tokenizerPath = path.join(CACHE_DIR, MODEL_IDS.colbert);
-    }
-
-    if (!modelPath) {
+    if (!resolved) {
       throw new Error(
-        `ColBERT ONNX model not found. Expected at ~/.osgrep/models/${MODEL_IDS.colbert}/onnx/model.onnx`,
+        `ColBERT ONNX model not found. Expected one of ${candidates.join(
+          ", ",
+        )} in ${onnxDir}`,
       );
     }
 
-    await this.colbertTokenizer.init(tokenizerPath);
+    await this.colbertTokenizer.init(basePath);
 
-    log(`Worker: Loading ColBERT ONNX session from ${modelPath}`);
+    log(`Worker: Loading ColBERT ONNX session from ${resolved}`);
 
     const sessionOptions: ort.InferenceSession.SessionOptions = {
       executionProviders: ["cpu"],
-      intraOpNumThreads: NUM_THREADS,
+      intraOpNumThreads: ONNX_THREADS,
       interOpNumThreads: 1,
       graphOptimizationLevel: "all",
     };
 
-    this.colbertSession = await ort.InferenceSession.create(modelPath, sessionOptions);
+    this.colbertSession = await ort.InferenceSession.create(resolved, sessionOptions);
   }
 
   private async ensureReady() {
@@ -386,7 +380,7 @@ class WorkerRuntime {
     await this.ensureReady();
 
     const results: HybridResult[] = [];
-    const envBatch = Number.parseInt(process.env.OSGREP_WORKER_BATCH_SIZE ?? "", 20);
+    const envBatch = Number.parseInt(process.env.OSGREP_WORKER_BATCH_SIZE ?? "", 10);
     const BATCH_SIZE =
       Number.isFinite(envBatch) && envBatch > 0
         ? Math.max(4, Math.min(16, envBatch))

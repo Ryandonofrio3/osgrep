@@ -12,16 +12,24 @@ import {
   Utf8,
 } from "apache-arrow";
 import { CONFIG } from "../../config";
+import { registerCleanup } from "../utils/cleanup";
 import type { VectorRecord } from "./types";
 
 const TABLE_NAME = "chunks";
 
 export class VectorDB {
   private db: lancedb.Connection | null = null;
+  private unregisterCleanup?: () => void;
+  private closed = false;
 
-  constructor(private lancedbDir: string) { }
+  constructor(private lancedbDir: string) {
+    this.unregisterCleanup = registerCleanup(() => this.close());
+  }
 
   private async getDb(): Promise<lancedb.Connection> {
+    if (this.closed) {
+      throw new Error("VectorDB connection is closed");
+    }
     if (!this.db) {
       fs.mkdirSync(this.lancedbDir, { recursive: true });
       this.db = await lancedb.connect(this.lancedbDir);
@@ -29,7 +37,7 @@ export class VectorDB {
     return this.db;
   }
 
-  private baseSchemaRow(): VectorRecord {
+  private seedRow(): VectorRecord {
     return {
       id: "seed",
       path: "",
@@ -42,16 +50,15 @@ export class VectorDB {
       context_prev: "",
       context_next: "",
       chunk_type: "",
-      vector: new Float32Array(CONFIG.VECTOR_DIM),
+      vector: Array(CONFIG.VECTOR_DIM).fill(0),
       colbert: Buffer.alloc(0),
       colbert_scale: 1,
-      pooled_colbert_48d: new Float32Array(CONFIG.COLBERT_DIM),
+      pooled_colbert_48d: Array(CONFIG.COLBERT_DIM).fill(0),
     };
   }
 
-  async ensureTable(): Promise<lancedb.Table> {
-    const db = await this.getDb();
-    const schema = new Schema([
+  private buildSchema(): Schema {
+    return new Schema([
       new Field("id", new Utf8(), false),
       new Field("path", new Utf8(), false),
       new Field("hash", new Utf8(), false),
@@ -82,14 +89,23 @@ export class VectorDB {
         true,
       ),
     ]);
+  }
 
+  async ensureTable(): Promise<lancedb.Table> {
+    const db = await this.getDb();
     try {
-      const table = await db.openTable(TABLE_NAME);
-      return table;
+      return await db.openTable(TABLE_NAME);
     } catch (_err) {
-      const table = await db.createTable(TABLE_NAME, [this.baseSchemaRow()], {
+      const schema = this.buildSchema();
+      const table = await db.createTable(TABLE_NAME, [this.seedRow()], {
         schema,
       });
+      const fieldNames =
+        Array.isArray((table as any)?.schema?.fields) &&
+          (table as any).schema.fields.length > 0
+          ? (table as any).schema.fields.map((f: any) => f?.name)
+          : [];
+      console.log("[vector-db] created table with fields", fieldNames);
       await table.delete('id = "seed"');
       return table;
     }
@@ -98,15 +114,57 @@ export class VectorDB {
   async insertBatch(records: VectorRecord[]): Promise<void> {
     if (!records.length) return;
     const table = await this.ensureTable();
-    const sanitized = records.map((rec) => ({
-      ...rec,
-      vector: Array.from(rec.vector),
-      colbert: Buffer.from(rec.colbert),
-      pooled_colbert_48d: rec.pooled_colbert_48d
-        ? Array.from(rec.pooled_colbert_48d)
-        : undefined,
-    }));
-    await table.add(sanitized);
+    const rows = records.map((rec) => {
+      const vec = (() => {
+        const arr = Array.from(rec.vector ?? []);
+        if (arr.length < CONFIG.VECTOR_DIM) {
+          arr.push(...Array(CONFIG.VECTOR_DIM - arr.length).fill(0));
+        } else if (arr.length > CONFIG.VECTOR_DIM) {
+          arr.length = CONFIG.VECTOR_DIM;
+        }
+        return arr;
+      })();
+
+      return {
+        id: rec.id,
+        path: rec.path,
+        hash: rec.hash,
+        content: rec.content,
+        start_line: rec.start_line,
+        end_line: rec.end_line,
+        chunk_index: rec.chunk_index ?? null,
+        is_anchor: rec.is_anchor ?? false,
+        context_prev: rec.context_prev ?? "",
+        context_next: rec.context_next ?? "",
+        chunk_type: rec.chunk_type ?? "",
+        vector: vec,
+        colbert: Buffer.from(rec.colbert ?? []),
+        colbert_scale: typeof rec.colbert_scale === "number" ? rec.colbert_scale : 1,
+        pooled_colbert_48d: rec.pooled_colbert_48d
+          ? Array.from(rec.pooled_colbert_48d)
+          : undefined,
+      };
+    });
+
+    try {
+      await table.add(rows);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.toLowerCase().includes("found field not in schema")) {
+        const schemaFields =
+          Array.isArray((table as any)?.schema?.fields) &&
+            (table as any).schema.fields.length > 0
+            ? (table as any).schema.fields.map((f: any) => f?.name)
+            : [];
+        console.error("[vector-db] schema mismatch, dropping table. Fields:", schemaFields);
+        await this.drop();
+        this.db = null;
+        const fresh = await this.ensureTable();
+        await fresh.add(rows);
+        return;
+      }
+      throw err;
+    }
   }
 
   async createFTSIndex(): Promise<void> {
@@ -158,5 +216,17 @@ export class VectorDB {
     } catch (_err) {
       // ignore if missing
     }
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.unregisterCleanup?.();
+    this.unregisterCleanup = undefined;
+    const hasClose = typeof (this.db as any)?.close === "function";
+    if (this.db && hasClose) {
+      await (this.db as any).close();
+    }
+    this.db = null;
   }
 }

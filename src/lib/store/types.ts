@@ -19,10 +19,10 @@ export type PreparedChunk = {
 };
 
 export type VectorRecord = PreparedChunk & {
-  vector: Float32Array;
-  colbert: Int8Array | Buffer;
+  vector: Float32Array | number[];
+  colbert: Int8Array | Buffer | number[];
   colbert_scale: number;
-  pooled_colbert_48d?: Float32Array;
+  pooled_colbert_48d?: Float32Array | number[];
 } & Record<string, unknown>;
 
 export interface FileMetadata extends MetadataRecord {

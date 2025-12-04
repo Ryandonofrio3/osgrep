@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { Command } from "commander";
 import { MODEL_IDS, PATHS } from "../config";
 import { findProjectRoot } from "../lib/utils/project-root";
+import { gracefulExit } from "../lib/utils/exit";
 
 export const doctor = new Command("doctor")
   .description("Check osgrep health and paths")
@@ -55,4 +56,5 @@ export const doctor = new Command("doctor")
     );
     console.log("\nIf you see ✅ everywhere, you are ready to search!");
 
+    await gracefulExit();
   });

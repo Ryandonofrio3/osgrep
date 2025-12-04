@@ -9,11 +9,12 @@ import {
   type InitialSyncProgress,
   type InitialSyncResult,
 } from "./sync-helpers";
-import { computeBufferHash, isIndexableFile } from "../utils/file-utils";
+import { computeBufferHash, hasNullByte, isIndexableFile } from "../utils/file-utils";
 import { MetaCache, type MetaEntry } from "../store/meta-cache";
 import { VectorDB } from "../store/vector-db";
 import { workerPool } from "../workers/pool";
 import type { VectorRecord } from "../store/types";
+import { acquireWriterLock, type LockHandle } from "../utils/lock";
 
 type SyncOptions = {
   projectRoot: string;
@@ -36,18 +37,19 @@ function buildIgnoreFilter(projectRoot: string) {
 async function flushBatch(
   db: VectorDB,
   meta: MetaCache,
-  batch: VectorRecord[],
+  vectors: VectorRecord[],
   pendingMeta: Map<string, MetaEntry>,
+  pendingDeletes: string[],
   dryRun?: boolean,
 ) {
-  if (batch.length === 0) return;
-  const toWrite = batch.splice(0);
-  const metaEntries = Array.from(pendingMeta.entries());
-  pendingMeta.clear();
-
   if (dryRun) return;
-  await db.insertBatch(toWrite);
-  for (const [p, entry] of metaEntries) {
+  if (pendingDeletes.length > 0) {
+    await db.deletePaths(pendingDeletes);
+  }
+  if (vectors.length > 0) {
+    await db.insertBatch(vectors);
+  }
+  for (const [p, entry] of pendingMeta.entries()) {
     meta.put(p, entry);
   }
 }
@@ -60,123 +62,223 @@ export async function initialSync(options: SyncOptions): Promise<InitialSyncResu
     signal,
   } = options;
   const paths = ensureProjectPaths(projectRoot);
+  let lock: LockHandle | null = null;
   const vectorDb = new VectorDB(paths.lancedbDir);
   const metaCache = new MetaCache(paths.lmdbPath);
   const ignoreFilter = buildIgnoreFilter(paths.root);
 
-  const globOptions: GlobOptions = {
-    cwd: paths.root,
-    dot: false,
-    onlyFiles: true,
-    unique: true,
-    followSymbolicLinks: false,
-    ignore: [...DEFAULT_IGNORE_PATTERNS, ".git/**", ".osgrep/**"],
-    suppressErrors: true,
-  };
+  try {
+    lock = await acquireWriterLock(paths.osgrepDir);
 
-  const total = 0;
-  onProgress?.({ processed: 0, indexed: 0, total, filePath: "Scanning..." });
+    const globOptions: GlobOptions = {
+      cwd: paths.root,
+      dot: false,
+      onlyFiles: true,
+      unique: true,
+      followSymbolicLinks: false,
+      ignore: [...DEFAULT_IGNORE_PATTERNS, ".git/**", ".osgrep/**"],
+      suppressErrors: true,
+      globstar: true,
+    };
 
-  const storedPaths = await vectorDb.listPaths();
-  const seenPaths = new Set<string>();
-  const batch: any[] = [];
-  const pendingMeta = new Map<string, MetaEntry>();
-  const batchLimit = Math.max(1, CONFIG.EMBED_BATCH_SIZE);
+    const total = 0;
+    onProgress?.({ processed: 0, indexed: 0, total, filePath: "Scanning..." });
 
-  let processed = 0;
-  let indexed = 0;
+    const storedPaths = await vectorDb.listPaths();
+    const seenPaths = new Set<string>();
+    const batch: VectorRecord[] = [];
+    const pendingMeta = new Map<string, MetaEntry>();
+    const pendingDeletes = new Set<string>();
+    const batchLimit = Math.max(1, CONFIG.EMBED_BATCH_SIZE);
+    const maxConcurrency = Math.max(1, CONFIG.WORKER_THREADS);
 
-  for await (const entry of fg.stream("**/*", globOptions)) {
-    if (signal?.aborted) break;
-    const relPath = entry.toString();
-    if (ignoreFilter.ignores(relPath)) continue;
+    const activeTasks: Promise<void>[] = [];
+    let processed = 0;
+    let indexed = 0;
+    let shouldSkipCleanup = false;
+    let flushError: unknown;
+    let flushPromise: Promise<void> | null = null;
 
-    const absPath = path.join(paths.root, relPath);
-    if (!isIndexableFile(absPath)) continue;
+    const markProgress = (filePath: string) => {
+      onProgress?.({ processed, indexed, total, filePath });
+    };
 
-    try {
-      const stats = await fs.promises.stat(absPath);
-      if (!isIndexableFile(absPath, stats.size)) continue;
+    const flush = async (force = false) => {
+      const shouldFlush =
+        force ||
+        batch.length >= batchLimit ||
+        pendingDeletes.size >= batchLimit ||
+        pendingMeta.size >= batchLimit;
+      if (!shouldFlush) return;
 
-      const cached = metaCache.get(relPath);
-
-      if (
-        cached &&
-        cached.mtimeMs === stats.mtimeMs &&
-        cached.size === stats.size
-      ) {
-        processed += 1;
-        seenPaths.add(relPath);
-        onProgress?.({ processed, indexed, total, filePath: relPath });
-        continue;
+      while (flushPromise) {
+        await flushPromise;
       }
 
-      const buffer = await fs.promises.readFile(absPath);
-      if (buffer.length === 0) {
-        processed += 1;
-        seenPaths.add(relPath);
-        onProgress?.({ processed, indexed, total, filePath: relPath });
-        continue;
-      }
-      const hash = computeBufferHash(buffer);
+      const toWrite = batch.splice(0);
+      const metaEntries = new Map(pendingMeta);
+      const deletes = Array.from(pendingDeletes);
+      pendingMeta.clear();
+      pendingDeletes.clear();
 
-      if (cached && cached.hash === hash) {
-        metaCache.put(relPath, {
-          hash,
-          mtimeMs: stats.mtimeMs,
-          size: stats.size,
-        });
-        processed += 1;
-        seenPaths.add(relPath);
-        onProgress?.({ processed, indexed, total, filePath: relPath });
-        continue;
-      }
+      flushPromise = flushBatch(
+        vectorDb,
+        metaCache,
+        toWrite,
+        metaEntries,
+        deletes,
+        dryRun,
+      );
 
-      if (dryRun) {
-        processed += 1;
-        indexed += 1;
-        seenPaths.add(relPath);
-        onProgress?.({ processed, indexed, total, filePath: relPath });
-        continue;
+      try {
+        await flushPromise;
+      } catch (err) {
+        flushError = err;
+        throw err;
+      } finally {
+        flushPromise = null;
       }
+    };
 
-      const vectors = await workerPool.processFile({
-        path: relPath,
-        content: buffer.toString("utf-8"),
-        hash,
+    const schedule = async (task: () => Promise<void>) => {
+      const taskPromise = task();
+      activeTasks.push(taskPromise);
+      taskPromise.finally(() => {
+        const idx = activeTasks.indexOf(taskPromise);
+        if (idx !== -1) activeTasks.splice(idx, 1);
       });
-
-      if (vectors.length > 0) {
-        batch.push(...vectors);
-        pendingMeta.set(relPath, {
-          hash,
-          mtimeMs: stats.mtimeMs,
-          size: stats.size,
-        });
-        indexed += 1;
+      if (activeTasks.length >= maxConcurrency) {
+        await Promise.race(activeTasks);
       }
+    };
 
-      seenPaths.add(relPath);
-      processed += 1;
-      onProgress?.({ processed, indexed, total, filePath: relPath });
-
-      if (batch.length >= batchLimit) {
-        await flushBatch(vectorDb, metaCache, batch, pendingMeta, dryRun);
+    for await (const entry of fg.stream("**/*", globOptions)) {
+      if (signal?.aborted) {
+        shouldSkipCleanup = true;
+        break;
       }
-    } catch (err) {
-      processed += 1;
-      console.error(`[sync] Failed to process ${relPath}:`, err);
-      onProgress?.({ processed, indexed, total, filePath: relPath });
+      const relPath = entry.toString();
+      if (ignoreFilter.ignores(relPath)) continue;
+
+      const absPath = path.join(paths.root, relPath);
+      if (!isIndexableFile(absPath)) continue;
+
+      await schedule(async () => {
+        if (signal?.aborted) {
+          shouldSkipCleanup = true;
+          return;
+        }
+
+        try {
+          const stats = await fs.promises.stat(absPath);
+          if (!isIndexableFile(absPath, stats.size)) {
+            return;
+          }
+
+          const cached = metaCache.get(relPath);
+
+          if (
+            cached &&
+            cached.mtimeMs === stats.mtimeMs &&
+            cached.size === stats.size
+          ) {
+            processed += 1;
+            seenPaths.add(relPath);
+            markProgress(relPath);
+            return;
+          }
+
+          const buffer = await fs.promises.readFile(absPath);
+          const hash = computeBufferHash(buffer);
+          const metaEntry: MetaEntry = {
+            hash,
+            mtimeMs: stats.mtimeMs,
+            size: stats.size,
+          };
+
+          if (buffer.length === 0 || hasNullByte(buffer)) {
+            if (!dryRun) {
+              pendingDeletes.add(relPath);
+              pendingMeta.set(relPath, metaEntry);
+              await flush(false);
+            }
+            processed += 1;
+            seenPaths.add(relPath);
+            markProgress(relPath);
+            return;
+          }
+
+          if (cached && cached.hash === hash) {
+            metaCache.put(relPath, metaEntry);
+            processed += 1;
+            seenPaths.add(relPath);
+            markProgress(relPath);
+            return;
+          }
+
+          if (dryRun) {
+            processed += 1;
+            indexed += 1;
+            seenPaths.add(relPath);
+            markProgress(relPath);
+            return;
+          }
+
+          const vectors = await workerPool.processFile({
+            path: relPath,
+            content: buffer.toString("utf-8"),
+            hash,
+          });
+
+          pendingDeletes.add(relPath);
+
+          if (vectors.length > 0) {
+            batch.push(...vectors);
+            pendingMeta.set(relPath, metaEntry);
+            indexed += 1;
+          } else {
+            pendingMeta.set(relPath, metaEntry);
+          }
+
+          seenPaths.add(relPath);
+          processed += 1;
+          markProgress(relPath);
+
+          await flush(false);
+        } catch (err) {
+          shouldSkipCleanup = true;
+          processed += 1;
+          console.error(`[sync] Failed to process ${relPath}:`, err);
+          markProgress(relPath);
+        }
+      });
     }
+
+    await Promise.allSettled(activeTasks);
+    if (signal?.aborted) {
+      shouldSkipCleanup = true;
+    }
+
+    await flush(true);
+
+    if (flushError) {
+      throw flushError instanceof Error
+        ? flushError
+        : new Error(String(flushError));
+    }
+
+    const stale = Array.from(storedPaths.keys()).filter((p) => !seenPaths.has(p));
+    if (!dryRun && stale.length > 0 && !shouldSkipCleanup) {
+      await vectorDb.deletePaths(stale);
+      stale.forEach((p) => metaCache.delete(p));
+    }
+
+    return { processed, indexed, total };
+  } finally {
+    if (lock) {
+      await lock.release();
+    }
+    metaCache.close();
+    await vectorDb.close();
   }
-
-  await flushBatch(vectorDb, metaCache, batch, pendingMeta, dryRun);
-
-  const stale = Array.from(storedPaths.keys()).filter((p) => !seenPaths.has(p));
-  if (!dryRun && stale.length > 0) {
-    await vectorDb.deletePaths(stale);
-    stale.forEach((p) => metaCache.delete(p));
-  }
-
-  return { processed, indexed, total };
 }

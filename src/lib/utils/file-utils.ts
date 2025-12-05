@@ -66,8 +66,6 @@ export function isIndexablePath(filePath: string): boolean {
   return isIndexableFile(filePath);
 }
 
-
-
 export function formatDenseSnippet(text: string, maxLength = 1500): string {
   const clean = text ?? "";
   if (clean.length <= maxLength) return clean;

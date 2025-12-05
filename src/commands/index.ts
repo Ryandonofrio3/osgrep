@@ -82,9 +82,6 @@ export const index = new Command("index")
           return;
         }
 
-        spinner.text = "Building search index (FTS)...";
-        await vectorDb.createFTSIndex();
-
         const failedSuffix =
           result.failedFiles > 0 ? ` • ${result.failedFiles} failed` : "";
         spinner.succeed(

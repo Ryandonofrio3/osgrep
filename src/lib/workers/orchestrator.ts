@@ -157,14 +157,16 @@ export class WorkerOrchestrator {
 
     for (let i = 0; i < texts.length; i++) {
       const chunk = chunks[i];
-      const prev = texts[i - 1];
-      const next = texts[i + 1];
+      const { content, displayText } = texts[i];
+      const prev = texts[i - 1]?.displayText;
+      const next = texts[i + 1]?.displayText;
 
       prepared.push({
         id: uuidv4(),
         path,
         hash,
-        content: texts[i],
+        content: content, // Now minimal
+        display_text: displayText, // Now rich
         context_prev: typeof prev === "string" ? prev : undefined,
         context_next: typeof next === "string" ? next : undefined,
         start_line: chunk.startLine,
@@ -225,9 +227,12 @@ export class WorkerOrchestrator {
     return { vectors, hash, mtimeMs, size };
   }
 
-  async encodeQuery(
-    text: string,
-  ): Promise<{ dense: number[]; colbert: number[][]; colbertDim: number }> {
+  async encodeQuery(text: string): Promise<{
+    dense: number[];
+    colbert: number[][];
+    colbertDim: number;
+    pooled_colbert_48d?: number[];
+  }> {
     await this.ensureReady();
 
     const [denseVector] = await this.granite.runBatch([text]);
@@ -279,10 +284,31 @@ export class WorkerOrchestrator {
       matrix.push(row);
     }
 
+    // Compute pooled embedding (mean of tokens)
+    const pooled = new Float32Array(dim);
+    for (const row of matrix) {
+      for (let d = 0; d < dim; d++) {
+        pooled[d] += row[d];
+      }
+    }
+    // Normalize pooled
+    let sumSq = 0;
+    for (let d = 0; d < dim; d++) {
+      pooled[d] /= matrix.length || 1;
+      sumSq += pooled[d] * pooled[d];
+    }
+    const norm = Math.sqrt(sumSq);
+    if (norm > 1e-9) {
+      for (let d = 0; d < dim; d++) {
+        pooled[d] /= norm;
+      }
+    }
+
     return {
       dense: Array.from(denseVector ?? []),
       colbert: matrix,
       colbertDim: dim,
+      pooled_colbert_48d: Array.from(pooled),
     };
   }
 
@@ -298,18 +324,26 @@ export class WorkerOrchestrator {
 
     return input.docs.map((doc) => {
       const col = doc.colbert;
-      const colbert =
-        col instanceof Int8Array
-          ? col
-          : Buffer.isBuffer(col)
-            ? new Int8Array(col.buffer, col.byteOffset, col.byteLength)
-            : col &&
-              typeof col === "object" &&
-              "type" in col &&
-              (col as any).type === "Buffer" &&
-              Array.isArray((col as any).data)
-              ? new Int8Array((col as any).data)
-              : new Int8Array(col as any);
+      let colbert: Int8Array;
+
+      if (col instanceof Int8Array) {
+        colbert = col;
+      } else if (Buffer.isBuffer(col)) {
+        colbert = new Int8Array(col.buffer, col.byteOffset, col.byteLength);
+      } else if (
+        col &&
+        typeof col === "object" &&
+        "type" in col &&
+        (col as any).type === "Buffer" &&
+        Array.isArray((col as any).data)
+      ) {
+        // IPC serialization fallback (still copies, but unavoidable without SharedArrayBuffer)
+        colbert = new Int8Array((col as any).data);
+      } else if (Array.isArray(col)) {
+        colbert = new Int8Array(col);
+      } else {
+        colbert = new Int8Array(0);
+      }
 
       const seqLen = Math.floor(colbert.length / input.colbertDim);
       const docMatrix: Float32Array[] = [];

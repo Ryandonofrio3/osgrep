@@ -24,3 +24,4 @@ benchmarks/*.log
 .osgrep/cache/meta.lmdb-lock
 
 .osgrep
+TODO.md

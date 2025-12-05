@@ -11,8 +11,6 @@ export interface ProjectPaths {
   configPath: string;
 }
 
-
-
 export function findProjectRoot(startDir = process.cwd()): string | null {
   const start = path.resolve(startDir);
   let dir = start;

@@ -52,7 +52,11 @@ export const search: Command = new CommanderCommand("search")
     "Syncs the local files to the store before searching",
     false,
   )
-  .option("-d, --dry-run", "Show what would be indexed without actually indexing", false)
+  .option(
+    "-d, --dry-run",
+    "Show what would be indexed without actually indexing",
+    false,
+  )
   .argument("<pattern>", "The pattern to search for")
   .argument("[path]", "The path to search in")
   .allowUnknownOption(true)

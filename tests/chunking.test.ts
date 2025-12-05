@@ -7,10 +7,7 @@ import {
 
 describe("TreeSitterChunker fallback and splitting", () => {
   it("splits large text into overlapping chunks with preserved ordering", async () => {
-    const chunker = new TreeSitterChunker() as TreeSitterChunker & {
-      initialized: boolean;
-      parser: unknown;
-    };
+    const chunker = new TreeSitterChunker() as any;
     // Skip init and force fallback path
     chunker.initialized = true;
     chunker.parser = null;
@@ -31,10 +28,7 @@ describe("TreeSitterChunker fallback and splitting", () => {
   });
 
   it("splits very long single-line content by characters", async () => {
-    const chunker = new TreeSitterChunker() as TreeSitterChunker & {
-      initialized: boolean;
-      parser: unknown;
-    };
+    const chunker = new TreeSitterChunker() as any;
     chunker.initialized = true;
     chunker.parser = null;
 
@@ -67,7 +61,7 @@ function example() {}`;
   });
 
   it("formatChunkText adds file breadcrumb when missing", () => {
-    const formatted = formatChunkText(
+    const { displayText } = formatChunkText(
       {
         content: "code",
         context: [],
@@ -77,7 +71,7 @@ function example() {}`;
       },
       "/repo/path/file.ts",
     );
-    expect(formatted.startsWith("File: /repo/path/file.ts")).toBe(true);
-    expect(formatted).toContain("---");
+    expect(displayText.startsWith("File: /repo/path/file.ts")).toBe(true);
+    expect(displayText).toContain("---");
   });
 });

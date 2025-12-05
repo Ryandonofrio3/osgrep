@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import * as http from "node:http";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 import { Command } from "commander";
 import { PATHS } from "../config";

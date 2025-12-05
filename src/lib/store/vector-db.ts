@@ -8,6 +8,7 @@ import {
   Float32,
   Float64,
   Int32,
+  List,
   Schema,
   Utf8,
 } from "apache-arrow";
@@ -43,6 +44,7 @@ export class VectorDB {
       path: "",
       hash: "",
       content: "",
+      display_text: "",
       start_line: 0,
       end_line: 0,
       chunk_index: 0,
@@ -54,6 +56,7 @@ export class VectorDB {
       colbert: Buffer.alloc(0),
       colbert_scale: 1,
       pooled_colbert_48d: Array(CONFIG.COLBERT_DIM).fill(0),
+      doc_token_ids: [],
     };
   }
 
@@ -63,6 +66,7 @@ export class VectorDB {
       new Field("path", new Utf8(), false),
       new Field("hash", new Utf8(), false),
       new Field("content", new Utf8(), false),
+      new Field("display_text", new Utf8(), false),
       new Field("start_line", new Int32(), false),
       new Field("end_line", new Int32(), false),
       new Field(
@@ -86,6 +90,11 @@ export class VectorDB {
           CONFIG.COLBERT_DIM,
           new Field("item", new Float32(), false),
         ),
+        true,
+      ),
+      new Field(
+        "doc_token_ids",
+        new List(new Field("item", new Int32(), true)),
         true,
       ),
     ]);
@@ -168,6 +177,7 @@ export class VectorDB {
         path: rec.path,
         hash: rec.hash,
         content: rec.content,
+        display_text: rec.display_text || rec.content, // fallback
         start_line: rec.start_line,
         end_line: rec.end_line,
         chunk_index: rec.chunk_index ?? null,
@@ -181,6 +191,9 @@ export class VectorDB {
           typeof rec.colbert_scale === "number" ? rec.colbert_scale : 1,
         pooled_colbert_48d: rec.pooled_colbert_48d
           ? Array.from(rec.pooled_colbert_48d)
+          : undefined,
+        doc_token_ids: rec.doc_token_ids
+          ? Array.from(rec.doc_token_ids)
           : undefined,
       };
     });
@@ -249,7 +262,7 @@ export class VectorDB {
     this.unregisterCleanup?.();
     this.unregisterCleanup = undefined;
     if (this.db) {
-      // @ts-ignore - close might not exist on some versions/mocks
+      // @ts-expect-error - close might not exist on some versions/mocks
       if (this.db.close) await this.db.close();
     }
     this.db = null;

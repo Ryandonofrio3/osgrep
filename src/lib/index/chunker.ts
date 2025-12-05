@@ -66,7 +66,7 @@ type TreeSitterLanguage = Record<string, never>;
 export function formatChunkText(
   chunk: ChunkWithContext,
   filePath: string,
-): string {
+): { content: string; displayText: string } {
   const breadcrumb = [...chunk.context];
   const fileLabel = `File: ${filePath || "unknown"}`;
   const hasFileLabel = breadcrumb.some(
@@ -76,7 +76,12 @@ export function formatChunkText(
     breadcrumb.unshift(fileLabel);
   }
   const header = breadcrumb.length > 0 ? breadcrumb.join(" > ") : fileLabel;
-  return `${header}\n---\n${chunk.content}`;
+  const displayText = `${header}\n---\n${chunk.content}`;
+
+  // Minimal prefix for embedding: just the file path comment
+  const content = `// ${filePath}\n${chunk.content}`;
+
+  return { content, displayText };
 }
 
 export function buildAnchorChunk(
@@ -255,10 +260,10 @@ export class TreeSitterChunker {
     const classify = (node: TreeSitterNode): Chunk["type"] => {
       const t = node.type;
       if (t.includes("method")) return "method";
-      if (isDefType(t) || isTopLevelValueDef(node)) return "function";
       if (t.includes("class")) return "class";
       if (t.includes("interface")) return "interface";
       if (t.includes("type_alias")) return "type_alias";
+      if (isDefType(t) || isTopLevelValueDef(node)) return "function";
       return "block";
     };
 

@@ -97,7 +97,7 @@ export async function initialSync(
       metaCache.close();
       try {
         fs.rmSync(paths.lmdbPath, { force: true });
-      } catch { }
+      } catch {}
       metaCache = new MetaCache(paths.lmdbPath);
     }
 
@@ -322,6 +322,16 @@ export async function initialSync(
       throw flushError instanceof Error
         ? flushError
         : new Error(String(flushError));
+    }
+
+    if (!dryRun) {
+      onProgress?.({
+        processed,
+        indexed,
+        total,
+        filePath: "Creating FTS index...",
+      });
+      await vectorDb.createFTSIndex();
     }
 
     const stale = Array.from(cachedPaths).filter((p) => !seenPaths.has(p));

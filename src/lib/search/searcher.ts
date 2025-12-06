@@ -12,19 +12,60 @@ import { getWorkerPool } from "../workers/pool";
 import { detectIntent, type SearchIntent } from "./intent";
 
 export class Searcher {
-  constructor(private db: VectorDB) {}
+  constructor(private db: VectorDB) { }
 
   private mapRecordToChunk(
     record: Partial<VectorRecord>,
     score: number,
   ): ChunkType {
-    const fullText = `${record.context_prev || ""}${record.display_text || record.content || ""}${record.context_next || ""} `;
-    const startLine = record.start_line || 0;
-    const endLine = record.end_line || startLine;
+    // 1. Aggressive Header Stripping
+    // The chunker adds a preamble like:
+    // // File: ...
+    // import ...
+    // File: ... > Function: ...
+    //
+    // We want to strip all that and get to the meat.
+    let cleanCode = record.content || "";
+
+    // Split by lines
+    const lines = cleanCode.split("\n");
+    let startIdx = 0;
+
+    // Skip lines that look like headers or imports
+    // Heuristic: Skip until we see a line that is NOT a comment, NOT an import, and NOT empty.
+    // But we must be careful not to skip the actual function definition if it starts with export.
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      if (line.startsWith("// File:")) continue;
+      if (line.startsWith("File:")) continue; // Sometimes "File: ..." without comment
+      if (line.startsWith("import ")) continue;
+      if (line.startsWith("from ")) continue; // Python/JS
+
+      // If we hit something else, this is likely the start of code
+      startIdx = i;
+      break;
+    }
+
+    // Reassemble and Truncate
+    const bodyLines = lines.slice(startIdx);
+    const MAX_LINES = 15;
+    let truncatedText = bodyLines.slice(0, MAX_LINES).join("\n");
+    if (bodyLines.length > MAX_LINES) {
+      truncatedText += `\n... (+${bodyLines.length - MAX_LINES} more lines)`;
+    }
+
+    // 2. Cap the Symbol Lists
+    const MAX_SYMBOLS = 10;
+    const truncate = (arr?: string[]) => {
+      if (!arr) return [];
+      if (arr.length <= MAX_SYMBOLS) return arr;
+      return [...arr.slice(0, MAX_SYMBOLS), `... (+${arr.length - MAX_SYMBOLS} more)`];
+    };
 
     return {
       type: "text",
-      text: fullText,
+      text: truncatedText.trim(),
       score,
       metadata: {
         path: record.path || "",
@@ -32,19 +73,23 @@ export class Searcher {
         is_anchor: !!record.is_anchor,
       },
       generated_metadata: {
-        start_line: startLine,
-        num_lines: Math.max(1, endLine - startLine + 1),
+        start_line: record.start_line || 0,
+        num_lines: Math.max(1, (record.end_line || 0) - (record.start_line || 0) + 1),
         type: record.chunk_type,
       },
       complexity: record.complexity,
       is_exported: record.is_exported,
-      defined_symbols: record.defined_symbols,
-      referenced_symbols: record.referenced_symbols,
-      imports: record.imports,
-      exports: record.exports,
       role: record.role,
       parent_symbol: record.parent_symbol,
-      context: record.context_prev ? [record.context_prev] : [], // Simplistic mapping for now
+
+      // Truncate lists to save tokens
+      defined_symbols: truncate(record.defined_symbols),
+      referenced_symbols: truncate(record.referenced_symbols),
+      imports: truncate(record.imports),
+      exports: truncate(record.exports),
+
+      // Remove 'context' field entirely from JSON output
+      // context: record.context_prev ? [record.context_prev] : [], 
     };
   }
 
@@ -377,24 +422,24 @@ export class Searcher {
 
     const scores = doRerank
       ? await pool.rerank({
-          query: queryMatrixRaw,
-          docs: rerankCandidates.map((doc) => ({
-            colbert: (doc.colbert as Buffer | Int8Array | number[]) ?? [],
-            scale:
-              typeof doc.colbert_scale === "number" ? doc.colbert_scale : 1,
-            token_ids: Array.isArray((doc as any).doc_token_ids)
-              ? ((doc as any).doc_token_ids as number[])
-              : undefined,
-          })),
-          colbertDim,
-        })
+        query: queryMatrixRaw,
+        docs: rerankCandidates.map((doc) => ({
+          colbert: (doc.colbert as Buffer | Int8Array | number[]) ?? [],
+          scale:
+            typeof doc.colbert_scale === "number" ? doc.colbert_scale : 1,
+          token_ids: Array.isArray((doc as any).doc_token_ids)
+            ? ((doc as any).doc_token_ids as number[])
+            : undefined,
+        })),
+        colbertDim,
+      })
       : rerankCandidates.map((doc, idx) => {
-          // If rerank is disabled, fall back to fusion ordering with structural boost
-          const key = doc.id || `${doc.path}:${doc.chunk_index}`;
-          const fusedScore = candidateScores.get(key) ?? 0;
-          // Small tie-breaker so later items don't all share 0
-          return fusedScore || 1 / (idx + 1);
-        });
+        // If rerank is disabled, fall back to fusion ordering with structural boost
+        const key = doc.id || `${doc.path}:${doc.chunk_index}`;
+        const fusedScore = candidateScores.get(key) ?? 0;
+        // Small tie-breaker so later items don't all share 0
+        return fusedScore || 1 / (idx + 1);
+      });
 
     type ScoredItem = {
       record: (typeof rerankCandidates)[number];

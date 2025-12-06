@@ -57,7 +57,7 @@ In our public benchmarks, `osgrep` can save about 20% of your LLM tokens and del
 
 ## Coding Agent Integration
 
-### For AI Agents (Claude, GPT, Gemini, etc.)
+### For AI Agents
 
 osgrep provides two commands optimized for agent workflows:
 

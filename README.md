@@ -34,7 +34,7 @@ Natural-language search that works like `grep`. Fast, local, and built for codin
 
     ```bash
     cd my-repo
-    osgrep "where do we handle authentication?" --json
+    osgrep "where do we handle authentication?"
     ```
 
     **Your first search will automatically index the repository.** Each repository is automatically isolated with its own index. Switching between repos "just works" — no manual configuration needed. If the background server is running (`osgrep serve`), search goes through the hot daemon; otherwise it falls back to on-demand indexing.
@@ -42,7 +42,7 @@ Natural-language search that works like `grep`. Fast, local, and built for codin
 4.  **Trace** (Call Graph)
 
     ```bash
-    osgrep search --trace "function_name" --json
+    osgrep search --trace "function_name"
     ```
 
     See who calls a function (upstream dependencies) and what it calls (downstream dependencies). Perfect for impact analysis and understanding code flow.
@@ -54,40 +54,6 @@ In our public benchmarks, `osgrep` can save about 20% of your LLM tokens and del
 </div>
 
 
-
-## Coding Agent Integration
-
-### For AI Agents
-
-osgrep provides two commands optimized for agent workflows:
-
-1. **`osgrep search "query" --json`** - Semantic search with role detection
-   - Find code by concept: *"how does authentication work"*
-   - Results include `role` (ORCHESTRATION vs DEFINITION) and `score` (relevance)
-   - Look for `role === "ORCHESTRATION" && score > 0.7` for main logic
-
-2. **`osgrep search --trace "SymbolName" --json`** - Call graph analysis
-   - Impact analysis: *"what depends on this function?"*
-   - Flow understanding: *"what does this call?"*
-   - Returns `callers` (upstream) and `callees` (downstream)
-
-**Example Agent Workflow:**
-```bash
-# User asks: "How does request validation work?"
-
-# Step 1: Find the implementation
-osgrep search "request validation logic" --json
-# → Returns: get_request_handler (role: ORCHESTRATION, score: 0.85)
-
-# Step 2: Trace to see dependencies
-osgrep search --trace "get_request_handler" --json
-# → Shows: 8 callers (entry points), 28 callees (operations)
-
-# Step 3: Read key files
-# Use paths from results to read implementation details
-```
-
-See [SKILL.md](SKILL.md) for complete agent integration guide.
 
 ### Claude Code Plugin
 
@@ -113,103 +79,10 @@ osgrep "how is the database connection pooled?" --json
 | `--per-file <n>` | Max matches to show per file. | `1` |
 | `-c`, `--content` | Show full chunk content instead of snippets. | `false` |
 | `--compact` | Show file paths only (like `grep -l`). | `false` |
-| `--json` | Output results as JSON with rich metadata (roles, symbols). **Recommended for agents.** | `false` |
 | `--trace <symbol>` | Trace call graph for a specific symbol (who calls it, what it calls). | - |
 | `-s`, `--sync` | Force re-index changed files before searching. | `false` |
 | `-r`, `--reset` | Reset the index and re-index from scratch. | `false` |
 
-**JSON Output (for AI Agents):**
-
-When using `--json`, osgrep returns structured data:
-
-**Search Results:**
-```json
-{
-  "results": [
-    {
-      "text": "// src/server.ts > startServer\nfunction startServer() {...}",
-      "score": 0.85,
-      "metadata": {
-        "path": "src/server.ts",
-        "hash": "abc123..."
-      },
-      "generated_metadata": {
-        "start_line": 42,
-        "num_lines": 15,
-        "type": "function"
-      },
-      "defined_symbols": ["startServer"],
-      "referenced_symbols": ["db.connect", "app.listen"],
-      "role": "ORCHESTRATION",
-      "parent_symbol": "ServerManager",
-      "context": ["// context from surrounding code"]
-    }
-  ]
-}
-```
-
-**Trace Results:**
-```json
-{
-  "graph": {
-    "center": {
-      "symbol": "request_handler",
-      "file": "src/api.ts",
-      "line": 127,
-      "role": "ORCHESTRATION",
-      "calls": ["validate", "authenticate", "process"],
-      "calledBy": []
-    },
-    "callers": [
-      {
-        "symbol": "app_router",
-        "file": "src/routes.ts",
-        "line": 45,
-        "role": "ORCHESTRATION",
-        "calls": ["request_handler"]
-      }
-    ],
-    "callees": [
-      "validate",
-      "authenticate",
-      "process"
-    ]
-  },
-  "metadata": {
-    "count": 1,
-    "query": "request_handler"
-  }
-}
-```
-
-**Key Fields:**
-- **`role`**: `ORCHESTRATION` (coordinates logic) or `DEFINITION` (defines types/classes)
-- **`score`**: 0-1 relevance score (>0.7 = highly relevant)
-- **`defined_symbols`**: Functions/classes defined in this chunk
-- **`referenced_symbols`**: Functions/classes called by this chunk
-- **`callers`**: (Trace only) Upstream: who depends on this
-- **`callees`**: (Trace only) Downstream: what this depends on
-
-**Examples:**
-
-```bash
-# Semantic search with structured output
-osgrep search "API rate limiting logic" --json
-
-# Find implementation and trace dependencies
-osgrep search "authentication flow" --json
-osgrep search --trace "authenticate" --json
-
-# Impact analysis: what depends on this function?
-osgrep search --trace "validateUser" --json
-# → Check callers.length for impact scope
-
-# Deep dive (show more matches per file)
-osgrep "error handling" --per-file 5
-
-# Just give me the files
-osgrep "user validation" --compact
-```
 
 ### `osgrep index`
 
@@ -324,7 +197,7 @@ pnpm format       # biome check
 
   - **Index feels stale?** Run `osgrep index` to refresh.
   - **Weird results?** Run `osgrep doctor` to verify models.
-  - **Need a fresh start?** Delete `~/.osgrep/data` and `~/.osgrep/meta.json` and run `osgrep index`.
+- **Need a fresh start?** Delete `~/.osgrep` and your repository's `.osgrep` directory and re-run `osgrep setup` and `osgrep index`.
 
 ## Attribution
 

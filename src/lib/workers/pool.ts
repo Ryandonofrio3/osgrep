@@ -29,7 +29,8 @@ type TaskResults = {
 
 type WorkerMessage =
   | { id: number; result: TaskResults[TaskMethod] }
-  | { id: number; error: string };
+  | { id: number; error: string }
+  | { id: number; heartbeat: true };
 
 function reviveBufferLike(input: unknown): Buffer | Int8Array | unknown {
   if (
@@ -169,8 +170,7 @@ export class WorkerPool {
       this.clearTaskTimeout(task);
       task.reject(
         new Error(
-          `Worker exited unexpectedly${code ? ` (code ${code})` : ""}${
-            signal ? ` signal ${signal}` : ""
+          `Worker exited unexpectedly${code ? ` (code ${code})` : ""}${signal ? ` signal ${signal}` : ""
           }`,
         ),
       );
@@ -190,6 +190,18 @@ export class WorkerPool {
     const onMessage = (msg: WorkerMessage) => {
       const task = this.tasks.get(msg.id);
       if (!task) return;
+
+      if ("heartbeat" in msg) {
+        // Reset timeout
+        this.clearTaskTimeout(task);
+        if (task.worker) {
+          task.timeout = setTimeout(
+            () => this.handleTaskTimeout(task, task.worker!),
+            TASK_TIMEOUT_MS,
+          );
+        }
+        return;
+      }
 
       if ("error" in msg) {
         task.reject(new Error(msg.error));
@@ -218,13 +230,67 @@ export class WorkerPool {
   private enqueue<M extends TaskMethod>(
     method: M,
     payload: TaskPayloads[M],
+    signal?: AbortSignal,
   ): Promise<TaskResults[M]> {
     if (this.destroyed) {
       return Promise.reject(new Error("Worker pool destroyed"));
     }
+    if (signal?.aborted) {
+      const err = new Error("Aborted");
+      err.name = "AbortError";
+      return Promise.reject(err);
+    }
+
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const task: PendingTask<M> = { id, method, payload, resolve, reject };
+      let settled = false;
+      const safeResolve = (val: TaskResults[M]) => {
+        if (!settled) {
+          settled = true;
+          resolve(val);
+        }
+      };
+      const safeReject = (reason?: unknown) => {
+        if (!settled) {
+          settled = true;
+          reject(reason);
+        }
+      };
+
+      const task: PendingTask<M> = {
+        id,
+        method,
+        payload,
+        resolve: safeResolve,
+        reject: safeReject,
+      };
+
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          // If task is still in queue, remove it
+          const idx = this.taskQueue.indexOf(id);
+          if (idx !== -1) {
+            this.taskQueue.splice(idx, 1);
+            this.tasks.delete(id);
+            const err = new Error("Aborted");
+            err.name = "AbortError";
+            safeReject(err);
+          }
+          // If task is already running (assigned to worker), we can't easily kill it without
+          // killing the worker. For now, we just let it finish but reject the promise early so
+          // the caller doesn't wait. The worker will eventually finish and we'll ignore the result.
+          else if (this.tasks.has(id)) {
+            // Task is running. Reject caller immediately.
+            const err = new Error("Aborted");
+            err.name = "AbortError";
+            safeReject(err);
+            // We intentionally do NOT delete the task map entry here,
+            // because we need handleWorkerMessage to cleanly cleanup the worker state
+            // when it eventually finishes.
+          }
+        }, { once: true });
+      }
+
       this.tasks.set(id, task as unknown as PendingTask<TaskMethod>);
       this.taskQueue.push(id);
       this.dispatch();
@@ -254,7 +320,7 @@ export class WorkerPool {
     worker.child.removeAllListeners("exit");
     try {
       worker.child.kill("SIGKILL");
-    } catch {}
+    } catch { }
 
     this.workers = this.workers.filter((w) => w !== worker);
     if (!this.destroyed) {
@@ -305,15 +371,16 @@ export class WorkerPool {
   }
 
   processFile(input: ProcessFileInput) {
+    // ProcessFile doesn't currently use cancellation, but we could add it later
     return this.enqueue("processFile", input);
   }
 
-  encodeQuery(text: string) {
-    return this.enqueue("encodeQuery", { text });
+  encodeQuery(text: string, signal?: AbortSignal) {
+    return this.enqueue("encodeQuery", { text }, signal);
   }
 
-  rerank(input: TaskPayloads["rerank"]) {
-    return this.enqueue("rerank", input);
+  rerank(input: TaskPayloads["rerank"], signal?: AbortSignal) {
+    return this.enqueue("rerank", input, signal);
   }
 
   async destroy(): Promise<void> {
@@ -339,7 +406,7 @@ export class WorkerPool {
           const force = setTimeout(() => {
             try {
               w.child.kill("SIGKILL");
-            } catch {}
+            } catch { }
           }, FORCE_KILL_GRACE_MS);
           setTimeout(() => {
             clearTimeout(force);

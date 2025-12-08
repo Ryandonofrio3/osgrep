@@ -11,8 +11,9 @@ const orchestrator = new WorkerOrchestrator();
 
 export default async function processFile(
   input: ProcessFileInput,
+  onProgress?: () => void,
 ): Promise<ProcessFileResult> {
-  return orchestrator.processFile(input);
+  return orchestrator.processFile(input, onProgress);
 }
 
 export async function encodeQuery(input: { text: string }) {

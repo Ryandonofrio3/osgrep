@@ -1,7 +1,6 @@
+
 import * as fs from "node:fs";
 import * as path from "node:path";
-import fg from "fast-glob";
-import ignore from "ignore";
 import { CONFIG } from "../../config";
 import { MetaCache, type MetaEntry } from "../store/meta-cache";
 import type { VectorRecord } from "../store/types";
@@ -11,8 +10,8 @@ import { acquireWriterLockWithRetry, type LockHandle } from "../utils/lock";
 import { ensureProjectPaths } from "../utils/project-root";
 import { getWorkerPool } from "../workers/pool";
 import type { ProcessFileResult } from "../workers/worker";
-import { DEFAULT_IGNORE_PATTERNS } from "./ignore-patterns";
 import type { InitialSyncProgress, InitialSyncResult } from "./sync-helpers";
+import { walk } from "./walker";
 
 type SyncOptions = {
   projectRoot: string;
@@ -22,24 +21,10 @@ type SyncOptions = {
   signal?: AbortSignal;
 };
 
-type GlobOptions = fg.Options;
 type MetaCacheLike = Pick<
   MetaCache,
   "get" | "getAllKeys" | "put" | "delete" | "close"
 >;
-
-function buildIgnoreFilter(projectRoot: string) {
-  const filter = ignore();
-  const gitignore = path.join(projectRoot, ".gitignore");
-  if (fs.existsSync(gitignore)) {
-    filter.add(fs.readFileSync(gitignore, "utf-8"));
-  }
-  const osgrepIgnore = path.join(projectRoot, ".osgrepignore");
-  if (fs.existsSync(osgrepIgnore)) {
-    filter.add(fs.readFileSync(osgrepIgnore, "utf-8"));
-  }
-  return filter;
-}
 
 async function flushBatch(
   db: VectorDB,
@@ -78,7 +63,7 @@ function createNoopMetaCache(): MetaCacheLike {
     delete: (filePath: string) => {
       store.delete(filePath);
     },
-    close: () => {},
+    close: () => { },
   };
 }
 
@@ -99,7 +84,6 @@ export async function initialSync(
 
   let lock: LockHandle | null = null;
   const vectorDb = new VectorDB(paths.lancedbDir);
-  const ignoreFilter = buildIgnoreFilter(paths.root);
   const treatAsEmptyCache = reset && dryRun;
   let metaCache: MetaCacheLike | null = null;
 
@@ -128,21 +112,10 @@ export async function initialSync(
         metaCache.close();
         try {
           fs.rmSync(paths.lmdbPath, { force: true });
-        } catch {}
+        } catch { }
         metaCache = new MetaCache(paths.lmdbPath);
       }
     }
-
-    const globOptions: GlobOptions = {
-      cwd: paths.root,
-      dot: true, // Enable dotfile discovery
-      onlyFiles: true,
-      unique: true,
-      followSymbolicLinks: false,
-      ignore: [...DEFAULT_IGNORE_PATTERNS, ".git/**", ".osgrep/**"],
-      suppressErrors: true,
-      globstar: true,
-    };
 
     let total = 0;
     onProgress?.({ processed: 0, indexed: 0, total, filePath: "Scanning..." });
@@ -251,13 +224,15 @@ export async function initialSync(
       }
     };
 
-    for await (const entry of fg.stream("**/*", globOptions)) {
+    for await (const relPath of walk(paths.root, {
+      additionalPatterns: ["**/.git/**", "**/.osgrep/**"], // exclude .git and .osgrep explicitly if walker doesn't
+    })) {
       if (signal?.aborted) {
         shouldSkipCleanup = true;
         break;
       }
-      const relPath = entry.toString();
-      if (ignoreFilter.ignores(relPath)) continue;
+      // Walker yields relative paths
+      // if (ignoreFilter.ignores(relPath)) continue; // Handled by walker
 
       const absPath = path.join(paths.root, relPath);
 

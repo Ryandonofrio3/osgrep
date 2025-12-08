@@ -286,6 +286,7 @@ export class Searcher {
     _filters?: SearchFilter,
     pathPrefix?: string,
     intent?: SearchIntent,
+    signal?: AbortSignal,
   ): Promise<SearchResponse> {
     const finalLimit = top_k ?? 10;
     const doRerank = _search_options?.rerank ?? true;
@@ -293,12 +294,24 @@ export class Searcher {
 
     const pool = getWorkerPool();
 
+    if (signal?.aborted) {
+      const err = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+
     const {
       dense: queryVector,
       colbert: queryMatrixRaw,
       colbertDim,
       pooled_colbert_48d: queryPooled,
-    } = await pool.encodeQuery(query);
+    } = await pool.encodeQuery(query, signal);
+
+    if (signal?.aborted) {
+      const err = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
 
     if (colbertDim !== CONFIG.COLBERT_DIM) {
       throw new Error(
@@ -386,6 +399,12 @@ export class Searcher {
       console.warn(`[Searcher] FTS search failed: ${msg}`);
     }
 
+    if (signal?.aborted) {
+      const err = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+
     // Reciprocal Rank Fusion (vector + FTS)
     const RRF_K = 60;
     const candidateScores = new Map<string, number>();
@@ -463,18 +482,21 @@ export class Searcher {
     const rerankCandidates = stage2Candidates.slice(0, RERANK_TOP);
 
     const scores = doRerank
-      ? await pool.rerank({
-        query: queryMatrixRaw,
-        docs: rerankCandidates.map((doc) => ({
-          colbert: (doc.colbert as Buffer | Int8Array | number[]) ?? [],
-          scale:
-            typeof doc.colbert_scale === "number" ? doc.colbert_scale : 1,
-          token_ids: Array.isArray((doc as any).doc_token_ids)
-            ? ((doc as any).doc_token_ids as number[])
-            : undefined,
-        })),
-        colbertDim,
-      })
+      ? await pool.rerank(
+        {
+          query: queryMatrixRaw,
+          docs: rerankCandidates.map((doc) => ({
+            colbert: (doc.colbert as Buffer | Int8Array | number[]) ?? [],
+            scale:
+              typeof doc.colbert_scale === "number" ? doc.colbert_scale : 1,
+            token_ids: Array.isArray((doc as any).doc_token_ids)
+              ? ((doc as any).doc_token_ids as number[])
+              : undefined,
+          })),
+          colbertDim,
+        },
+        signal,
+      )
       : rerankCandidates.map((doc, idx) => {
         // If rerank is disabled, fall back to fusion ordering with structural boost
         const key = doc.id || `${doc.path}:${doc.chunk_index}`;

@@ -163,18 +163,36 @@ export const serve = new Command("serve")
                   searchPath = path.relative(projectRoot, resolvedPath);
                 }
 
+                // Add AbortController for cancellation
+                const ac = new AbortController();
+                req.on("close", () => {
+                  ac.abort();
+                });
+
                 const result = await searcher.search(
                   query,
                   limit,
                   { rerank: true },
                   undefined,
                   searchPath,
+                  undefined, // intent
+                  ac.signal
                 );
+
+                if (ac.signal.aborted) {
+                  // Request was cancelled, don't write response if possible
+                  // (Though usually 'close' means the socket is gone anyway)
+                  return;
+                }
 
                 res.statusCode = 200;
                 res.setHeader("Content-Type", "application/json");
                 res.end(JSON.stringify({ results: result.data }));
               } catch (err) {
+                if (err instanceof Error && err.name === "AbortError") {
+                  // Request cancelled
+                  return;
+                }
                 res.statusCode = 500;
                 res.setHeader("Content-Type", "application/json");
                 res.end(

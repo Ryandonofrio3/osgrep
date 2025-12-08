@@ -87,7 +87,10 @@ export class WorkerOrchestrator {
     return this.initPromise;
   }
 
-  private async computeHybrid(texts: string[]): Promise<HybridResult[]> {
+  private async computeHybrid(
+    texts: string[],
+    onProgress?: () => void,
+  ): Promise<HybridResult[]> {
     if (!texts.length) return [];
     await this.ensureReady();
 
@@ -101,6 +104,7 @@ export class WorkerOrchestrator {
         ? Math.max(4, Math.min(16, envBatch))
         : 16;
     for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+      if (i > 0) onProgress?.();
       const batchTexts = texts.slice(i, i + BATCH_SIZE);
       const denseBatch = await this.granite.runBatch(batchTexts);
       const colbertBatch = await this.colbert.runBatch(
@@ -110,6 +114,7 @@ export class WorkerOrchestrator {
       );
       results.push(...colbertBatch);
     }
+    onProgress?.();
 
     return results;
   }
@@ -189,7 +194,10 @@ export class WorkerOrchestrator {
     return prepared;
   }
 
-  async processFile(input: ProcessFileInput): Promise<ProcessFileResult> {
+  async processFile(
+    input: ProcessFileInput,
+    onProgress?: () => void,
+  ): Promise<ProcessFileResult> {
     const absolutePath = path.isAbsolute(input.path)
       ? input.path
       : input.absolutePath
@@ -207,14 +215,20 @@ export class WorkerOrchestrator {
       return { vectors: [], hash, mtimeMs, size, shouldDelete: true };
     }
 
+    onProgress?.();
     await this.ensureReady();
+    onProgress?.();
+
     const content = buffer.toString("utf-8");
     const chunks = await this.chunkFile(input.path, content);
+    onProgress?.();
+
     if (!chunks.length) return { vectors: [], hash, mtimeMs, size };
 
     const preparedChunks = this.toPreparedChunks(input.path, hash, chunks);
     const hybrids = await this.computeHybrid(
       preparedChunks.map((chunk) => chunk.content),
+      onProgress,
     );
 
     const vectors = preparedChunks.map((chunk, idx) => {
@@ -233,6 +247,7 @@ export class WorkerOrchestrator {
       };
     });
 
+    onProgress?.();
     return { vectors, hash, mtimeMs, size };
   }
 

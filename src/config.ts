@@ -55,7 +55,7 @@ export const PATHS = {
   grammars: path.join(GLOBAL_ROOT, "grammars"),
 };
 
-export const MAX_FILE_SIZE_BYTES = 1024 * 1024 * 10; // 10MB limit for indexing
+export const MAX_FILE_SIZE_BYTES = 1024 * 1024 * 2; // 2MB limit for indexing
 
 // Extensions we consider for indexing to avoid binary noise and improve relevance.
 export const INDEXABLE_EXTENSIONS: Set<string> = new Set([

@@ -283,7 +283,19 @@ export class TreeSitterChunker {
     }
 
     if (result.chunks.length === 0) {
-      result.chunks = this.fallbackChunk(content, filePath);
+      // FIX: Skip fallback chunking for large data files to prevent memory leaks/CPU spikes
+      // on massive generated JSON/YAML/XML files.
+      const isDataFile = [".json", ".yaml", ".yml", ".xml", ".csv", ".map"].includes(
+        path.extname(filePath).toLowerCase(),
+      );
+      // 100KB limit for data files that don't have tree-sitter support or failed to parse
+      const LARGE_DATA_FILE_LIMIT = 100 * 1024;
+
+      if (isDataFile && content.length > LARGE_DATA_FILE_LIMIT) {
+        // Return empty result for large data files
+      } else {
+        result.chunks = this.fallbackChunk(content, filePath);
+      }
     }
 
     if (docLike) {
@@ -300,6 +312,13 @@ export class TreeSitterChunker {
     content: string,
   ): Promise<ChunkingResult> {
     const ext = path.extname(filePath);
+    if (ext === ".json") {
+      return {
+        chunks: [],
+        metadata: { imports: [], exports: [], comments: [] },
+      };
+    }
+
     const langDef = getLanguageByExtension(ext);
     const lang = langDef?.grammar?.name || "";
     if (!lang)

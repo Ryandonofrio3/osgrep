@@ -11,16 +11,17 @@ type IncomingMessage =
   | { id: number; method: "processFile"; payload: ProcessFileInput }
   | { id: number; method: "encodeQuery"; payload: { text: string } }
   | {
-      id: number;
-      method: "rerank";
-      payload: { query: number[][]; docs: RerankDoc[]; colbertDim: number };
-    };
+    id: number;
+    method: "rerank";
+    payload: { query: number[][]; docs: RerankDoc[]; colbertDim: number };
+  };
 
 type OutgoingMessage =
   | { id: number; result: ProcessFileResult }
   | { id: number; result: Awaited<ReturnType<typeof encodeQuery>> }
   | { id: number; result: Awaited<ReturnType<typeof rerank>> }
-  | { id: number; error: string };
+  | { id: number; error: string }
+  | { id: number; heartbeat: true };
 
 const send = (msg: OutgoingMessage) => {
   if (process.send) {
@@ -32,7 +33,10 @@ process.on("message", async (msg: IncomingMessage) => {
   const { id, method, payload } = msg;
   try {
     if (method === "processFile") {
-      const result = await processFile(payload);
+      const onProgress = () => {
+        send({ id, heartbeat: true });
+      };
+      const result = await processFile(payload, onProgress);
       send({ id, result });
       return;
     }

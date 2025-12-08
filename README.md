@@ -9,6 +9,10 @@
   <a href="https://deepwiki.com/Ryandonofrio3/osgrep">
     <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" />
   </a>
+
+<a>
+  <img alt="CodeRabbit Pull Request Reviews" src="https://img.shields.io/coderabbit/prs/github/ryandonofrio3/osgrep">
+</a>
 </div>
 
 

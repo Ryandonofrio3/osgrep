@@ -28,6 +28,9 @@ Natural-language search that works like `grep`. Fast, local, and built for codin
 
 ## Quick Start
 
+[![Run in Smithery](https://smithery.ai/badge/skills/ryandonofrio3)](https://smithery.ai/skills?ns=ryandonofrio3&utm_source=github&utm_medium=badge)
+
+
 1. **Install**
    ```bash
    npm install -g osgrep

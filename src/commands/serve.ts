@@ -70,6 +70,15 @@ export const serve = new Command("serve")
     // Propagate project root to worker processes
     process.env.OSGREP_PROJECT_ROOT = projectRoot;
 
+    // Register early to prevent race conditions where multiple sessions
+    // spawn servers before any finishes indexing. Port 0 = "starting up".
+    registerServer({
+      pid: process.pid,
+      port: 0,
+      projectRoot,
+      startTime: Date.now(),
+    });
+
     try {
       await ensureSetup();
       await ensureGrammars(console.log, { silent: true });
@@ -289,6 +298,7 @@ export const serve = new Command("serve")
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
     } catch (error) {
+      unregisterServer(process.pid);
       const message = error instanceof Error ? error.message : "Unknown error";
       console.error("Serve failed:", message);
       process.exitCode = 1;

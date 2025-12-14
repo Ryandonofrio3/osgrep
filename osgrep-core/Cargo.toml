@@ -22,11 +22,6 @@ tokenizers = "0.21"
 hf-hub = "0.4"
 
 # ONNX Runtime (the only ML backend we need)
-# CoreML enabled on macOS for GPU acceleration
-[target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "2.0.0-rc.10", default-features = true, features = ["download-binaries", "coreml"] }
-
-[target.'cfg(not(target_os = "macos"))'.dependencies]
 ort = { version = "2.0.0-rc.10", default-features = true, features = ["download-binaries"] }
 
 [build-dependencies]

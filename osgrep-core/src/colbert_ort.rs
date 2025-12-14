@@ -4,9 +4,6 @@ use tokenizers::Tokenizer;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use std::collections::HashSet;
 
-#[cfg(target_os = "macos")]
-use ort::execution_providers::CoreMLExecutionProvider;
-
 fn log_native(msg: impl AsRef<str>) {
     // Intentionally no-op: native logging was polluting CLI output.
     // If you need debugging, add structured logging at the JS layer instead.
@@ -65,23 +62,9 @@ impl ColbertEncoderOrt {
 
         log_native(format!("[ColBERT-ORT] Loading model from {:?}", model_path));
 
-        // Initialize ONNX Runtime session
-        // On macOS, use CoreML for GPU acceleration with CPU fallback
-        #[cfg(target_os = "macos")]
-        let session = Session::builder()?
-            .with_execution_providers([
-                CoreMLExecutionProvider::default()
-                    .with_subgraphs(true)  // Enable CoreML for subgraphs
-                    .build(),
-            ])?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(8)?
-            .commit_from_file(&model_path)?;
-
-        #[cfg(not(target_os = "macos"))]
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(8)?
+            .with_intra_threads(4)?  // Reduced from 8 to avoid thread contention
             .commit_from_file(&model_path)?;
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path)

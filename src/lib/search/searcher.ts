@@ -356,11 +356,6 @@ export class Searcher {
             query: queryMatrixRaw,
             docs: rerankCandidates.map((doc) => ({
               colbert: (doc.colbert as Buffer | Int8Array | number[]) ?? [],
-              scale:
-                typeof doc.colbert_scale === "number" ? doc.colbert_scale : 1,
-              token_ids: Array.isArray((doc as any).doc_token_ids)
-                ? ((doc as any).doc_token_ids as number[])
-                : undefined,
             })),
             colbertDim,
           })

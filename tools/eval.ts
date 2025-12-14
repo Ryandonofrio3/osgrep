@@ -1,11 +1,11 @@
-// Reduce worker pool fan-out during eval to avoid ONNX concurrency issues
-process.env.OSGREP_WORKER_COUNT ??= "1";
-
-import { Searcher } from "./lib/search/searcher";
-import type { SearchResponse } from "./lib/store/types";
-import { VectorDB } from "./lib/store/vector-db";
-import { gracefulExit } from "./lib/utils/exit";
-import { ensureProjectPaths, findProjectRoot } from "./lib/utils/project-root";
+import { Searcher } from "../src/lib/search/searcher";
+import type { SearchResponse } from "../src/lib/store/types";
+import { VectorDB } from "../src/lib/store/vector-db";
+import { gracefulExit } from "../src/lib/utils/exit";
+import {
+  ensureProjectPaths,
+  findProjectRoot,
+} from "../src/lib/utils/project-root";
 
 export type EvalCase = {
   query: string;

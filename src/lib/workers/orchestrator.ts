@@ -18,7 +18,7 @@ import {
   formatChunkText,
   TreeSitterChunker,
 } from "../index/chunker";
-import { embedBatch, initNative, encodeQueryColbert } from "../native";
+import { embedBatch, initNative, encodeQueryColbert, rerankColbert } from "../native";
 import type { PreparedChunk, VectorRecord } from "../store/types";
 import {
   computeBufferHash,
@@ -46,8 +46,6 @@ export type ProcessFileResult = {
 
 export type RerankDoc = {
   colbert: Buffer | Int8Array | number[];
-  scale: number;
-  token_ids?: number[];
 };
 
 // =============================================================================
@@ -194,9 +192,6 @@ export class WorkerOrchestrator {
         ...chunk,
         vector: hybrid.dense,
         colbert: Buffer.from(hybrid.colbert),
-        colbert_scale: 1, // Native returns pre-scaled INT8
-        pooled_colbert_48d: undefined, // Can compute if needed
-        doc_token_ids: undefined,
       };
     });
 
@@ -208,7 +203,6 @@ export class WorkerOrchestrator {
     dense: number[];
     colbert: number[][];
     colbertDim: number;
-    pooled_colbert_48d?: number[];
   }> {
     await this.ensureReady();
 
@@ -231,31 +225,10 @@ export class WorkerOrchestrator {
       matrix.push(row);
     }
 
-    // Compute pooled embedding (mean of tokens)
-    const pooled = new Float32Array(dim);
-    for (const row of matrix) {
-      for (let d = 0; d < dim; d++) {
-        pooled[d] += row[d];
-      }
-    }
-    // Normalize
-    let sumSq = 0;
-    for (let d = 0; d < dim; d++) {
-      pooled[d] /= matrix.length || 1;
-      sumSq += pooled[d] * pooled[d];
-    }
-    const norm = Math.sqrt(sumSq);
-    if (norm > 1e-9) {
-      for (let d = 0; d < dim; d++) {
-        pooled[d] /= norm;
-      }
-    }
-
     return {
       dense: Array.from(denseVector),
       colbert: matrix,
       colbertDim: dim,
-      pooled_colbert_48d: Array.from(pooled),
     };
   }
 
@@ -266,15 +239,27 @@ export class WorkerOrchestrator {
   }): Promise<number[]> {
     await this.ensureReady();
 
-    // MaxSim scoring in TypeScript (simple, matches Rust behavior)
-    const queryMatrix = input.query.map((row) =>
-      row instanceof Float32Array ? row : new Float32Array(row)
-    );
+    // Flatten query matrix to match native `rerankColbert` signature
+    const queryEmbedding: number[] = [];
+    for (const row of input.query) {
+      for (let i = 0; i < row.length; i++) {
+        queryEmbedding.push(row[i] ?? 0);
+      }
+    }
 
-    return input.docs.map((doc) => {
+    const docLengths: number[] = [];
+    const docOffsets: number[] = [];
+    const candidateIndices: number[] = [];
+
+    // Pack all doc embeddings into a single buffer; offsets are element offsets
+    const packedChunks: Int8Array[] = [];
+    let totalElements = 0;
+
+    for (let i = 0; i < input.docs.length; i++) {
+      const doc = input.docs[i];
       const col = doc.colbert;
-      let colbert: Int8Array;
 
+      let colbert: Int8Array;
       if (col instanceof Int8Array) {
         colbert = col;
       } else if (Buffer.isBuffer(col)) {
@@ -286,30 +271,40 @@ export class WorkerOrchestrator {
       }
 
       const seqLen = Math.floor(colbert.length / input.colbertDim);
+      const used = colbert.subarray(0, seqLen * input.colbertDim);
 
-      // MaxSim: for each query token, find max similarity with doc tokens, sum
-      let totalScore = 0;
-      for (let q = 0; q < queryMatrix.length; q++) {
-        const qRow = queryMatrix[q];
-        let maxDot = -Infinity;
+      docOffsets.push(totalElements);
+      docLengths.push(seqLen);
+      candidateIndices.push(i);
+      packedChunks.push(used);
+      totalElements += used.length;
+    }
 
-        for (let d = 0; d < seqLen; d++) {
-          let dot = 0;
-          for (let k = 0; k < input.colbertDim; k++) {
-            // Dequantize INT8 back to float
-            const docVal = (colbert[d * input.colbertDim + k] * doc.scale) / 127;
-            dot += qRow[k] * docVal;
-          }
-          if (dot > maxDot) maxDot = dot;
-        }
+    const packed = new Int8Array(totalElements);
+    let cursor = 0;
+    for (const chunk of packedChunks) {
+      packed.set(chunk, cursor);
+      cursor += chunk.length;
+    }
 
-        if (maxDot > -Infinity) {
-          totalScore += maxDot;
-        }
-      }
-
-      return totalScore;
+    const result = await rerankColbert({
+      queryEmbedding: new Float32Array(queryEmbedding),
+      docEmbeddings: packed,
+      docLengths,
+      docOffsets,
+      candidateIndices,
+      topK: input.docs.length,
     });
+
+    const scoreByIndex = new Map<number, number>();
+    for (let i = 0; i < result.indices.length; i++) {
+      const idx = result.indices[i] ?? -1;
+      const score = result.scores[i] ?? 0;
+      if (typeof idx === "number") scoreByIndex.set(idx, score);
+    }
+
+    // Return scores aligned to input order (Searcher expects this)
+    return candidateIndices.map((i) => scoreByIndex.get(i) ?? 0);
   }
 }
 

@@ -30,7 +30,6 @@ const GLOBAL_ROOT = path.join(HOME, ".osgrep");
 
 export const PATHS = {
   globalRoot: GLOBAL_ROOT,
-  models: path.join(GLOBAL_ROOT, "models"),
   grammars: path.join(GLOBAL_ROOT, "grammars"),
 };
 

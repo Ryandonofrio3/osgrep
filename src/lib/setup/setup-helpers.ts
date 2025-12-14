@@ -4,7 +4,6 @@ import { PATHS } from "../../config";
 
 export interface SetupPaths {
   root: string;
-  models: string;
   grammars: string;
 }
 
@@ -15,7 +14,6 @@ export interface SetupStatus extends SetupPaths {
 function getPaths(): SetupPaths {
   return {
     root: PATHS.globalRoot,
-    models: PATHS.models,
     grammars: PATHS.grammars,
   };
 }
@@ -30,7 +28,7 @@ export async function ensureSetup({
   silent?: boolean;
 } = {}): Promise<SetupStatus> {
   const paths = getPaths();
-  const dirs = [paths.root, paths.models, paths.grammars];
+  const dirs = [paths.root, paths.grammars];
 
   const needsDirs = dirs.some((dir) => !fs.existsSync(dir));
   let createdDirs = false;

@@ -21,7 +21,7 @@ Natural-language search that works like `grep`. Fast, local, and built for codin
 
 - **Semantic:** Finds concepts ("where do transactions get created?"), not just strings.
 - **Role Detection:** Distinguishes `ORCHESTRATION` (high-level logic) from `DEFINITION` (types/classes).
-- **Local & Private:** 100% local embeddings via `onnxruntime-node`.
+- **Local & Private:** 100% local embeddings via `onnxruntime`.
 - **Auto-Isolated:** Each repository gets its own index automatically.
 - **Agent-Ready:** Native output with symbols and roles.
 

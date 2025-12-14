@@ -1,13 +1,4 @@
-/**
- * Native bindings to osgrep-core (Rust)
- *
- * This module provides the bridge to the native Rust code for:
- * - Dense embeddings (384-dim, granite-30m)
- * - ColBERT embeddings (48-dim per token)
- * - ColBERT reranking
- *
- * All ML inference happens in Rust via ONNX Runtime for maximum speed.
- */
+
 
 import { CONFIG, MODEL_IDS } from "../../config";
 

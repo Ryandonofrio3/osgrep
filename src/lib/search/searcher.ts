@@ -18,6 +18,61 @@ export class Searcher {
   private static readonly RERANK_CANDIDATES_K = 80;
   private static readonly FUSED_WEIGHT = 0.5;
   private static readonly MAX_PER_FILE = 3;
+  private static readonly FTS_STOPWORDS = new Set([
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "before",
+    "but",
+    "by",
+    "do",
+    "does",
+    "for",
+    "from",
+    "how",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "our",
+    "that",
+    "the",
+    "their",
+    "then",
+    "this",
+    "to",
+    "we",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "with",
+  ]);
+
+  private static normalizeFtsQuery(query: string): string {
+    const tokens = query
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, " ")
+      .split(/\s+/g)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .filter((t) => t.length >= 3)
+      .filter((t) => !Searcher.FTS_STOPWORDS.has(t));
+
+    // Keep the query short to avoid pathological FTS parsing / scoring.
+    return tokens.slice(0, 16).join(" ");
+  }
 
   private mapRecordToChunk(
     record: Partial<VectorRecord>,
@@ -158,6 +213,11 @@ export class Searcher {
     if (isTestPath) {
       adjusted *= 0.5;
     }
+    // Tooling/docs-like paths often contain lots of "how do we..." text and can
+    // dominate semantic queries (e.g., `tools/eval.ts`).
+    if (/(^|\/)(tools|scripts|experiments)(\/|$)/i.test(pathStr)) {
+      adjusted *= 0.35;
+    }
     if (
       pathStr.endsWith(".md") ||
       pathStr.endsWith(".json") ||
@@ -223,7 +283,9 @@ export class Searcher {
     pathPrefix?: string,
     signal?: AbortSignal,
   ): Promise<SearchResponse> {
-    const finalLimit = top_k ?? 10;
+    const finalLimitRaw = top_k ?? 10;
+    const finalLimit =
+      Number.isFinite(finalLimitRaw) && finalLimitRaw > 0 ? finalLimitRaw : 10;
     const doRerank = options?.rerank ?? true;
 
     if (signal?.aborted) {
@@ -305,7 +367,9 @@ export class Searcher {
 
     let ftsResults: VectorRecord[] = [];
     try {
-      let ftsQuery = table.search(query).limit(PRE_RERANK_K);
+      const ftsText = Searcher.normalizeFtsQuery(query);
+      if (!ftsText) throw new Error("Empty FTS query after normalization");
+      let ftsQuery = table.search(ftsText).limit(PRE_RERANK_K);
       if (whereClause) {
         ftsQuery = ftsQuery.where(whereClause);
       }
@@ -356,6 +420,12 @@ export class Searcher {
             query: queryMatrixRaw,
             docs: rerankCandidates.map((doc) => ({
               colbert: (doc.colbert as Buffer | Int8Array | number[]) ?? [],
+              token_ids: Array.isArray((doc as any).doc_token_ids)
+                ? ((doc as any).doc_token_ids as number[])
+                : typeof (doc as any).doc_token_ids?.toArray === "function"
+                  ? (((doc as any).doc_token_ids.toArray() as unknown[]) ?? [])
+                      .filter((v) => typeof v === "number") as number[]
+                  : [],
             })),
             colbertDim,
           })

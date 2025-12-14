@@ -14,6 +14,8 @@ export type EvalCase = {
   note?: string;
 };
 
+const DEFAULT_AVOID_PATH = "tools/eval.ts";
+
 export type EvalResult = {
   rr: number;
   found: boolean;
@@ -56,52 +58,21 @@ export const cases: EvalCase[] = [
     expectedPath: "src/lib/workers/orchestrator.ts",
     note: "Worker-side rerank that feeds query/docs into maxSim.",
   },
+  // --- Native (N-API) Core ---
   {
-    query: "ColBERT maxSim scoring implementation",
-    expectedPath: "src/lib/workers/colbert-math.ts",
-    note: "Summed max dot products between query and doc token grids.",
-  },
-
-  // --- Worker Pool & Embeddings ---
-  {
-    query: "Why are ONNX workers child processes instead of threads?",
-    expectedPath: "src/lib/workers/pool.ts",
-    note: "Process pool choice to isolate runtime crashes.",
+    query: "Where is the osgrep-core native binding loaded?",
+    expectedPath: "src/lib/native/index.ts",
+    note: "loadNative() dynamic import + friendly error message.",
   },
   {
-    query: "How do we timeout and restart stuck worker tasks?",
-    expectedPath: "src/lib/workers/pool.ts",
-    note: "Task timeout handling that kills and respawns workers.",
+    query: "Where do we initialize the dense and ColBERT models?",
+    expectedPath: "src/lib/native/index.ts",
+    note: "initNative() calls initModels() once.",
   },
   {
-    query: "Which script does the worker pool fork at runtime?",
-    expectedPath: "src/lib/workers/pool.ts",
-    note: "resolveProcessWorker chooses process-child entrypoint.",
-  },
-  {
-    query: "How does worker pool shutdown terminate children?",
-    expectedPath: "src/lib/workers/pool.ts",
-    note: "destroy() kills processes with SIGTERM/SIGKILL fallback.",
-  },
-  {
-    query: "Where are Granite embeddings loaded from onnx cache?",
-    expectedPath: "src/lib/workers/embeddings/granite.ts",
-    note: "resolvePaths + load selecting ONNX weights and tokenizer.",
-  },
-  {
-    query: "How do we mean-pool Granite outputs to 384 dimensions?",
-    expectedPath: "src/lib/workers/embeddings/granite.ts",
-    note: "meanPool normalizes and pads vectors to CONFIG.VECTOR_DIM.",
-  },
-  {
-    query: "How does ColBERT quantize token grids to int8 with a scale?",
-    expectedPath: "src/lib/workers/embeddings/colbert.ts",
-    note: "runBatch builds int8 arrays and records maxVal scale.",
-  },
-  {
-    query: "Where do we compute pooled_colbert_48d summaries?",
-    expectedPath: "src/lib/workers/embeddings/colbert.ts",
-    note: "Per-chunk pooled embedding stored alongside dense vectors.",
+    query: "Where do we call native rerankColbert from JS?",
+    expectedPath: "src/lib/native/index.ts",
+    note: "rerankColbert() wrapper converts typed arrays and calls native.",
   },
   {
     query: "How do we normalize ColBERT query embeddings before rerank?",
@@ -299,8 +270,8 @@ export const cases: EvalCase[] = [
   },
   {
     query: "Where is TASK_TIMEOUT_MS set for worker tasks?",
-    expectedPath: "src/lib/workers/pool.ts",
-    note: "OSGREP_WORKER_TASK_TIMEOUT_MS guarded timeout.",
+    expectedPath: "src/config.ts",
+    note: "Worker-related timeout env vars live in config.",
   },
   {
     query:
@@ -315,19 +286,19 @@ export const cases: EvalCase[] = [
   },
   {
     query: "Where do we load Granite ONNX with CPU execution providers?",
-    expectedPath: "src/lib/workers/embeddings/granite.ts",
-    note: "load() builds sessionOptions for cpu backend.",
+    expectedPath: "src/lib/native/index.ts",
+    note: "Inference is performed in the native Rust core via ONNX Runtime.",
   },
   {
     query: "Where do we limit ColBERT ONNX runtime threads to 1?",
-    expectedPath: "src/lib/workers/embeddings/colbert.ts",
-    note: "ONNX_THREADS constant and session options.",
+    expectedPath: "src/lib/native/index.ts",
+    note: "Threading is configured inside the native Rust core.",
   },
   {
     query:
       "How do we normalize ColBERT doc vectors and quantize to int8 scale?",
-    expectedPath: "src/lib/workers/embeddings/colbert.ts",
-    note: "runBatch builds normalized grid and scale factor.",
+    expectedPath: "src/lib/native/index.ts",
+    note: "Docs are stored as INT8 ColBERT grids produced by native core.",
   },
   {
     query: "Where do we normalize ColBERT query rows before building matrix?",
@@ -559,14 +530,13 @@ export function evaluateCase(
     return expectedPaths.some((expected) => path.includes(expected));
   });
 
-  const avoidRank = response.data.findIndex((chunk) =>
-    chunk.metadata?.path
-      ?.toLowerCase()
-      .includes(evalCase.avoidPath?.toLowerCase() || "_____"),
-  );
+  const avoidPath = (evalCase.avoidPath ?? DEFAULT_AVOID_PATH).toLowerCase();
+  const avoidRank = response.data.findIndex((chunk) => {
+    const path = chunk.metadata?.path?.toLowerCase() || "";
+    return avoidPath ? path.includes(avoidPath) : false;
+  });
 
-  const hitAvoid =
-    evalCase.avoidPath && avoidRank >= 0 && (rank === -1 || avoidRank < rank);
+  const hitAvoid = avoidRank >= 0 && (rank === -1 || avoidRank < rank);
   const found = rank >= 0 && !hitAvoid;
   const rr = found ? 1 / (rank + 1) : 0;
   const recall = found && rank < 10 ? 1 : 0;

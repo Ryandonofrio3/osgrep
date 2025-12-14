@@ -46,6 +46,7 @@ export type ProcessFileResult = {
 
 export type RerankDoc = {
   colbert: Buffer | Int8Array | number[];
+  token_ids?: number[];
 };
 
 // =============================================================================
@@ -192,6 +193,7 @@ export class WorkerOrchestrator {
         ...chunk,
         vector: hybrid.dense,
         colbert: Buffer.from(hybrid.colbert),
+        doc_token_ids: Array.from(hybrid.token_ids),
       };
     });
 
@@ -250,10 +252,12 @@ export class WorkerOrchestrator {
     const docLengths: number[] = [];
     const docOffsets: number[] = [];
     const candidateIndices: number[] = [];
+    const packedTokenChunks: Uint32Array[] = [];
 
     // Pack all doc embeddings into a single buffer; offsets are element offsets
     const packedChunks: Int8Array[] = [];
     let totalElements = 0;
+    let totalTokenIds = 0;
 
     for (let i = 0; i < input.docs.length; i++) {
       const doc = input.docs[i];
@@ -273,11 +277,18 @@ export class WorkerOrchestrator {
       const seqLen = Math.floor(colbert.length / input.colbertDim);
       const used = colbert.subarray(0, seqLen * input.colbertDim);
 
+      const tokenIdsRaw = doc.token_ids ?? [];
+      const tokenIds = Uint32Array.from(
+        tokenIdsRaw.slice(0, seqLen).map((v) => (Number.isFinite(v) ? v : 0)),
+      );
+
       docOffsets.push(totalElements);
       docLengths.push(seqLen);
       candidateIndices.push(i);
       packedChunks.push(used);
+      packedTokenChunks.push(tokenIds);
       totalElements += used.length;
+      totalTokenIds += tokenIds.length;
     }
 
     const packed = new Int8Array(totalElements);
@@ -287,9 +298,17 @@ export class WorkerOrchestrator {
       cursor += chunk.length;
     }
 
+    const packedTokenIds = new Uint32Array(totalTokenIds);
+    let tokenCursor = 0;
+    for (const chunk of packedTokenChunks) {
+      packedTokenIds.set(chunk, tokenCursor);
+      tokenCursor += chunk.length;
+    }
+
     const result = await rerankColbert({
       queryEmbedding: new Float32Array(queryEmbedding),
       docEmbeddings: packed,
+      docTokenIds: packedTokenIds,
       docLengths,
       docOffsets,
       candidateIndices,

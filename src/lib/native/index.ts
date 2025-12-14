@@ -127,6 +127,7 @@ export async function embedColbert(texts: string[]): Promise<ColbertPacked> {
 export interface HybridEmbedding {
   dense: Float32Array;
   colbert: Int8Array;
+  token_ids: Uint32Array;
   colbertLength: number;
   colbertOffset: number;
 }
@@ -144,6 +145,8 @@ export async function embedBatch(texts: string[]): Promise<HybridEmbedding[]> {
   const colbertDim = CONFIG.COLBERT_DIM;
 
   const embeddings: HybridEmbedding[] = [];
+  const tokenIds = new Uint32Array(result.colbertTokenIds);
+  let tokenCursor = 0;
 
   for (let i = 0; i < texts.length; i++) {
     // Extract dense vector
@@ -162,9 +165,14 @@ export async function embedBatch(texts: string[]): Promise<HybridEmbedding[]> {
       colbert[j] = result.colbertEmbeddings[colbertOffset + j];
     }
 
+    // Extract token IDs for this doc (length = colbertLength)
+    const tokenSlice = tokenIds.subarray(tokenCursor, tokenCursor + colbertLength);
+    tokenCursor += colbertLength;
+
     embeddings.push({
       dense,
       colbert,
+      token_ids: new Uint32Array(tokenSlice),
       colbertLength,
       colbertOffset: 0, // Will be set when storing
     });
@@ -198,6 +206,8 @@ export interface RerankInput {
   queryEmbedding: Float32Array;
   /** Packed ColBERT doc embeddings (INT8) */
   docEmbeddings: Int8Array;
+  /** Packed ColBERT doc token ids (UINT32) aligned to docEmbeddings */
+  docTokenIds: Uint32Array;
   /** Token counts per doc */
   docLengths: number[];
   /** Byte offsets per doc */
@@ -222,9 +232,22 @@ export async function rerankColbert(input: RerankInput): Promise<RerankResult> {
   await initNative();
   const n = await loadNative();
 
+  const q = Float64Array.from(input.queryEmbedding as any);
+
+  const docs =
+    input.docEmbeddings instanceof Int8Array
+      ? input.docEmbeddings
+      : new Int8Array(input.docEmbeddings as any);
+
+  const tokenIds =
+    input.docTokenIds instanceof Uint32Array
+      ? input.docTokenIds
+      : Uint32Array.from(input.docTokenIds as any);
+
   const result = n.rerankColbert(
-    Array.from(input.queryEmbedding),
-    Array.from(input.docEmbeddings),
+    q,
+    docs,
+    tokenIds,
     input.docLengths,
     input.docOffsets,
     input.candidateIndices,

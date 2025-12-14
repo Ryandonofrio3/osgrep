@@ -262,7 +262,7 @@ function formatCompactTable(
 export const search: Command = new CommanderCommand("search")
   .description("File pattern searcher")
   .option(
-    "-m <max_count>, --max-count <max_count>",
+    "-m, --max-count <max_count>",
     "The maximum number of results to return (total)",
     "5",
   )
@@ -297,7 +297,7 @@ export const search: Command = new CommanderCommand("search")
   .allowExcessArguments(true)
   .action(async (pattern, exec_path, _options, cmd) => {
     const options: {
-      m: string;
+      maxCount: string;
       content: boolean;
       perFile: string;
       scores: boolean;
@@ -313,6 +313,9 @@ export const search: Command = new CommanderCommand("search")
     }
 
     const root = process.cwd();
+    const limitRaw = Number.parseInt(options.maxCount, 10);
+    const limit =
+      Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 5;
     const minScore = Number.isFinite(Number.parseFloat(options.minScore))
       ? Number.parseFloat(options.minScore)
       : 0;
@@ -331,7 +334,7 @@ export const search: Command = new CommanderCommand("search")
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             query: pattern,
-            limit: parseInt(options.m, 10),
+            limit,
             path: exec_path
               ? path.relative(projectRootForServer, path.resolve(exec_path))
               : undefined,
@@ -488,7 +491,7 @@ export const search: Command = new CommanderCommand("search")
 
       const searchResult = await searcher.search(
         pattern,
-        parseInt(options.m, 10),
+        limit,
         { rerank: true },
         undefined,
         exec_path ? path.relative(projectRoot, path.resolve(exec_path)) : "",

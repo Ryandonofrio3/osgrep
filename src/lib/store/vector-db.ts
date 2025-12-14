@@ -55,6 +55,7 @@ export class VectorDB {
       is_exported: false,
       vector: Array(CONFIG.VECTOR_DIM).fill(0),
       colbert: Buffer.alloc(0),
+      doc_token_ids: [],
       defined_symbols: [],
       referenced_symbols: [],
       imports: [],
@@ -104,6 +105,11 @@ export class VectorDB {
       new Field("complexity", new Float32(), true),
       new Field("is_exported", new Bool(), true),
       new Field("colbert", new Binary(), true),
+      new Field(
+        "doc_token_ids",
+        new List(new Field("item", new Int32(), true)),
+        true,
+      ),
       new Field(
         "defined_symbols",
         new List(new Field("item", new Utf8(), true)),
@@ -214,6 +220,7 @@ export class VectorDB {
         is_exported: rec.is_exported ?? false,
         vector: vec,
         colbert: toBuffer(rec.colbert),
+        doc_token_ids: rec.doc_token_ids ? Array.from(rec.doc_token_ids) : [],
         defined_symbols: rec.defined_symbols ?? [],
         referenced_symbols: rec.referenced_symbols ?? [],
         imports: rec.imports ?? [],

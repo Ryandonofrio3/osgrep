@@ -31,6 +31,7 @@ export type PreparedChunk = {
 export type VectorRecord = PreparedChunk & {
   vector: Float32Array | number[];
   colbert: Int8Array | Buffer | number[];
+  doc_token_ids?: number[] | Int32Array;
 } & Record<string, unknown>;
 
 export interface FileMetadata extends MetadataRecord {

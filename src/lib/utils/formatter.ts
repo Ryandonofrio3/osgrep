@@ -1,5 +1,7 @@
 import * as path from "node:path";
 import { highlight } from "cli-highlight";
+import { getLanguageByExtension } from "../store/languages";
+import { style } from "./ansi";
 
 export interface TextResult {
   path: string;
@@ -9,15 +11,6 @@ export interface TextResult {
   start_line: number;
   end_line: number;
 }
-
-const style = {
-  bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
-  dim: (s: string) => `\x1b[2m${s}\x1b[22m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[39m`,
-  blue: (s: string) => `\x1b[34m${s}\x1b[39m`,
-};
-
-import { getLanguageByExtension } from "../core/languages";
 
 function detectLanguage(filePath: string): string {
   const ext = path.extname(filePath);

@@ -20,11 +20,10 @@
 Natural-language search that works like `grep`. Fast, local, and built for coding agents.
 
 - **Semantic:** Finds concepts ("where do transactions get created?"), not just strings.
-- **Call Graph Tracing:** Map dependencies with `trace` to see who calls what.
 - **Role Detection:** Distinguishes `ORCHESTRATION` (high-level logic) from `DEFINITION` (types/classes).
-- **Local & Private:** 100% local embeddings via `onnxruntime-node`.
+- **Local & Private:** 100% local embeddings via `onnxruntime`.
 - **Auto-Isolated:** Each repository gets its own index automatically.
-- **Agent-Ready:** Native output with symbols, roles, and call graphs.
+- **Agent-Ready:** Native output with symbols and roles.
 
 ## Quick Start
 
@@ -49,26 +48,6 @@ Natural-language search that works like `grep`. Fast, local, and built for codin
     ```
 
     **Your first search will automatically index the repository.** Each repository is automatically isolated with its own index. Switching between repos "just works" — no manual configuration needed. If the background server is running (`osgrep serve`), search goes through the hot daemon; otherwise it falls back to on-demand indexing.
-
-4.  **Trace** (Call Graph)
-
-    ```bash
-    osgrep trace "function_name"
-    ```
-See who calls a function (upstream dependencies) and what it calls (downstream dependencies). Perfect for impact analysis and understanding code flow.
-
-To find the symbols in your code base:
-    ```bash
-    osgrep symbols
-    ```
-
-In our public benchmarks, `osgrep` can save about 20% of your LLM tokens and deliver a 30% speedup.
-
-<div align="center">
-  <img src="public/bench.png" alt="osgrep benchmark" width="100%" style="border-radius: 8px; margin: 20px 0;" />
-</div>
-
-
 
 ### Claude Code Plugin
 
@@ -104,15 +83,20 @@ osgrep "how is the database connection pooled?"
 | `--scores` | Show relevance scores (0-1) for each result. | `false` |
 | `--min-score <n>` | Filter out results below this score threshold. | `0` |
 | `--compact` | Show file paths only (like `grep -l`). | `false` |
+| `--deep` | Include related code (callers, definitions) for architectural context. | `false` |
 | `-s`, `--sync` | Force re-index changed files before searching. | `false` |
 | `-r`, `--reset` | Reset the index and re-index from scratch. | `false` |
+
 **Examples:**
 
 ```bash
 # General concept search
 osgrep "API rate limiting logic"
 
-# Deep dive (show more matches per file)
+# Deep dive with architectural context (shows callers and definitions)
+osgrep "how does authentication work" --deep
+
+# Show more matches per file
 osgrep "error handling" --per-file 5
 
 # Just give me the files
@@ -158,7 +142,7 @@ Runs a lightweight HTTP server with live file watching so searches stay hot in R
 - Keeps LanceDB and the embedding worker resident for <50ms responses.
 - Watches the repo (via chokidar) and incrementally re-indexes on change.
 - Health endpoint: `GET /health`
-- Search endpoint: `POST /search` with `{ query, limit, path, rerank }`
+- Search endpoint: `POST /search` with `{ query, limit, path, deep }`
 - Writes lock: `.osgrep/server.json` with `port`/`pid`
 
 **Options:**
@@ -205,6 +189,59 @@ osgrep serve stop --all
 
 Claude Code hooks start/stop this automatically; you rarely need to run it manually.
 
+### `osgrep trace`
+
+Shows callers and callees for a symbol in one shot — replaces multiple search/read cycles when tracing code flow.
+
+```bash
+osgrep trace handleRequest
+```
+
+**Output (default plain format):**
+```
+handleRequest
+  def: src/server/handler.ts:45
+  calls: validateAuth routeRequest sendResponse
+  called_by: src/index.ts:12 src/api/router.ts:87
+```
+
+**Options:**
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--depth <n>` | Traversal depth for nested calls | `1` |
+| `--callers` | Show only callers (who calls this) | `false` |
+| `--callees` | Show only callees (what this calls) | `false` |
+| `--path <prefix>` | Filter results to path prefix | - |
+| `--pretty` | Tree view output for humans | `false` |
+| `--json` | JSON output for programmatic use | `false` |
+
+**Examples:**
+
+```bash
+# Basic trace
+osgrep trace Searcher
+
+# Only show what calls this function
+osgrep trace handleAuth --callers
+
+# Only show what this function calls
+osgrep trace handleAuth --callees
+
+# Filter to specific directory
+osgrep trace validateToken --path src/auth
+
+# Pretty tree output
+osgrep trace processRequest --pretty
+```
+
+**Server endpoint:**
+```bash
+curl -X POST http://localhost:4444/trace \
+  -H "Content-Type: application/json" \
+  -d '{"symbol": "Searcher", "depth": 1, "callers": true}'
+```
+
 ### `osgrep list`
 
 Lists all indexed repositories (stores) and their metadata.
@@ -214,32 +251,6 @@ osgrep list
 ```
 
 Shows store names, sizes, and last modified times. Useful for seeing what's indexed and cleaning up old stores.
-
-### `osgrep skeleton`
-
-Generates a compressed "skeleton" of a file, showing only signatures, types, and class structures while eliding function bodies.
-
-```bash
-osgrep skeleton src/lib/auth.ts
-```
-
-**Output:**
-```typescript
-class AuthService {
-  validate(token: string): boolean {
-    // → jwt.verify, checkScope, .. | C:5 | ORCH
-  }
-}
-```
-
-**Modes:**
-- `osgrep skeleton <file>`: Skeletonize specific file.
-- `osgrep skeleton <Symbol>`: Find symbol in index and skeletonize its file.
-- `osgrep skeleton "query"`: Search for query and skeletonize top matches.
-
-**Supported Languages:**
-TypeScript, JavaScript, Python, Go, Rust, Java, C#, C++, C, Ruby, PHP.
-
 
 ### `osgrep doctor`
 
@@ -303,9 +314,9 @@ osgrep respects both `.gitignore` and `.osgrepignore` files when indexing. Creat
 ## Development
 
 ```bash
-pnpm install
-pnpm build        # or pnpm dev
-pnpm format       # biome check
+bun install
+bun run build
+bun run format    # biome check
 ```
 
 ## Troubleshooting
@@ -316,15 +327,7 @@ pnpm format       # biome check
 - **Want faster indexing?** Keep fallback disabled (default) to skip files without TreeSitter support.
 - **Need a fresh start?** Delete `~/.osgrep/data` and `~/.osgrep/meta.json` and run `osgrep index`.
 
-## Attribution
-
-osgrep is built upon the foundation of [mgrep](https://github.com/mixedbread-ai/mgrep) by MixedBread. We acknowledge and appreciate the original architectural concepts and design decisions that informed this work.
-
-
-See the [NOTICE](NOTICE) file for detailed attribution information.
-
 ## License
 
-Licensed under the Apache License, Version 2.0.
-See [LICENSE](LICENSE) and [Apache-2.0](https://opensource.org/licenses/Apache-2.0) for details.
+Licensed under the [Apache License, Version 2.0](https://opensource.org/licenses/Apache-2.0).
 

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { CONFIG } from "../../config";
-import { getLanguageByExtension } from "../core/languages";
+import { getLanguageByExtension } from "../store/languages";
 import { GRAMMARS_DIR } from "./grammar-loader";
 
 // web-tree-sitter ships a CommonJS build
@@ -119,7 +119,7 @@ export function formatChunkText(
   const sections: string[] = [];
 
   // 1. File path (always first)
-  sections.push(`// ${filePath}`);
+  sections.push(`// File: ${filePath}`);
 
   // 2. Imports (if available)
   if (chunk.imports && chunk.imports.length > 0) {

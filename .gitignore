@@ -1,28 +1,53 @@
 dist/
 node_modules/
+**/node_modules/
 *.tsbuildinfo
 *.tgz
-ADVANCED.md
-test-build.sh
-TEST_SUITE_PROMPT.md
-WATCH_MODE_PROMPT.md
-ENGINEERING_DIARY.md
-RELEASE_GUIDE.md
-osgrep/run-benchmark.sh
-run-agent-benchmark.sh
-setup-benchmark-repos.sh
-AGENT_BENCHMARK.md
-benchmark-results.json
-src/bench/benchmark-agent.ts
-src/bench/generate-benchmark-chart.ts
-src/.env.local
-CLAUDE.md
 .DS_Store
-latest_review.md
-benchmarks/*.log
-.osgrep/server.json
-.osgrep/cache/meta.lmdb-lock
 
-.osgrep
+# Local osgrep data
+.osgrep/
+
+# Development files
+CLAUDE.md
 TODO.md
 AGENTS.md
+ADVANCED.md
+ENGINEERING_DIARY.md
+RELEASE_GUIDE.md
+TEST_SUITE_PROMPT.md
+WATCH_MODE_PROMPT.md
+AGENT_BENCHMARK.md
+latest_review.md
+plan.md
+
+# Benchmark & experiments (dev-only)
+benchmark/
+experiments/
+scripts/
+tools/
+public/
+test_skeleton.py
+test-build.sh
+run-agent-benchmark.sh
+setup-benchmark-repos.sh
+benchmark-results.json
+benchmarks/*.log
+src/bench/
+
+# Env files
+src/.env.local
+.env*
+
+# Lockfiles (using bun)
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+bun.lockb
+# Native core (Rust / N-API) build outputs
+osgrep-core/target/
+**/target/
+osgrep-core/*.node
+osgrep-core/bench/
+.osgrep

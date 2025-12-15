@@ -6,46 +6,112 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
 
+env:
+  CARGO_INCREMENTAL: 0
+
 jobs:
-  publish-npm:
+  # =============================================================================
+  # Build native binaries for each platform
+  # =============================================================================
+  build-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use-cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Linux musl)
+        if: matrix.use-cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli
+
+      - name: Build native module
+        working-directory: osgrep-core
+        run: napi build --platform --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: osgrep-core/*.node
+          if-no-files-found: error
+
+  # =============================================================================
+  # Publish platform packages + meta package + osgrep
+  # =============================================================================
+  publish:
     runs-on: ubuntu-latest
+    needs: build-native
     permissions:
       contents: write
       id-token: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-          cache: 'pnpm'
-          cache-dependency-path: 'pnpm-lock.yaml'
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: osgrep-core/artifacts
+
+      - name: Move artifacts to osgrep-core
+        run: |
+          cd osgrep-core
+          for dir in artifacts/bindings-*/; do
+            mv "$dir"*.node . 2>/dev/null || true
+          done
+          rm -rf artifacts
+          ls -la *.node
 
       - name: Verify tag commit is on main
-        working-directory: .
         run: |
           git fetch origin main --depth=1
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "Refusing to publish: tag commit is not on main"
             exit 1
           fi
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Check types
-        run: pnpm run typecheck
 
       - name: Verify tag matches package.json version
         run: |
@@ -56,15 +122,36 @@ jobs:
             exit 1
           fi
 
-      - name: Build
-        run: pnpm build
-
-      - name: Publish to npm
-        run: pnpm publish --access public --provenance --no-git-checks
+      - name: Publish osgrep-core platform packages
+        working-directory: osgrep-core
+        run: napi prepublish -t npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Create GitHub Release (tag only, no assets)
+      - name: Publish osgrep-core meta package
+        working-directory: osgrep-core
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install osgrep dependencies
+        run: bun install
+
+      - name: Check types
+        run: bun run typecheck
+
+      - name: Build osgrep
+        run: bun run build
+
+      - name: Publish osgrep to npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}

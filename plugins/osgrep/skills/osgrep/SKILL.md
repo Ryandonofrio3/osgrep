@@ -1,10 +1,11 @@
 ---
 name: osgrep
-description: Semantic code search. Use alongside grep - grep for exact strings, osgrep for concepts.
+description: Semantic code search and call tracing. Use alongside grep - grep for exact strings, osgrep for concepts and call flow.
 allowed-tools: "Bash(osgrep:*), Read"
 ---
 
 ## What osgrep does
+
 
 Finds code by meaning. When you'd ask a colleague "where do we handle auth?", use osgrep.
 
@@ -46,16 +47,45 @@ Read src/auth/handler.ts:45-120
 
 Read the specific line range, not the whole file.
 
-## Other commands
+## Trace command
+
+When you need to understand call flow (who calls what, what calls who):
+
 ```bash
-# Trace call graph (who calls X, what X calls)
-osgrep trace handleAuth
+osgrep trace handleRequest
+```
 
-# Skeleton of a huge file (to find which ranges to read)
-osgrep skeleton src/giant-2000-line-file.ts
+**Output:**
+```
+handleRequest
+  def: src/server/handler.ts:45
+  calls: validateAuth routeRequest sendResponse
+  called_by: src/index.ts:12 src/api/router.ts:87
+```
 
+Use trace when:
+- You found a function and need to know what calls it
+- You need to understand what a function depends on
+- You're tracing request/data flow through the codebase
+
+```bash
+# Only callers (who calls this?)
+osgrep trace handleAuth --callers
+
+# Only callees (what does this call?)
+osgrep trace handleAuth --callees
+
+# Filter to specific path
+osgrep trace validateToken --path src/auth
+```
+
+## Other options
+```bash
 # Just file paths when you only need locations
 osgrep "authentication" --compact
+
+# Show more results
+osgrep "error handling" -m 20
 ```
 
 ## Workflow: architecture questions
@@ -66,9 +96,6 @@ osgrep "where do requests enter the server"
 
 # 2. If you need deeper context on a specific function
 Read src/server/handler.ts:45-120
-
-# 3. Trace to understand call flow
-osgrep trace handleRequest
 ```
 
 ## Tips

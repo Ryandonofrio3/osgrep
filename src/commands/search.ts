@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
@@ -9,9 +8,12 @@ import {
 } from "../lib/index/sync-helpers";
 import { initialSync } from "../lib/index/syncer";
 import { Searcher } from "../lib/search/searcher";
+import type {
+  ExpandedResult,
+  ExpandOptions,
+  ExpansionNode,
+} from "../lib/search/expansion-types";
 import { ensureSetup } from "../lib/setup/setup-helpers";
-import { Skeletonizer } from "../lib/skeleton";
-import { getStoredSkeleton } from "../lib/skeleton/retriever";
 import type {
   ChunkType,
   FileMetadata,
@@ -22,7 +24,116 @@ import { gracefulExit } from "../lib/utils/exit";
 import { formatTextResults, type TextResult } from "../lib/utils/formatter";
 import { isLocked } from "../lib/utils/lock";
 import { ensureProjectPaths, findProjectRoot } from "../lib/utils/project-root";
-import { getServerForProject } from "../lib/utils/server-registry";
+import { getServerForProject, unregisterServer } from "../lib/utils/server-registry";
+
+/**
+ * Get expand options for --deep mode.
+ * Sweet spot config: callers + symbols at depth 2.
+ */
+function getDeepExpandOptions(deep: boolean): ExpandOptions | undefined {
+  if (!deep) return undefined;
+
+  return {
+    maxDepth: 2,
+    maxExpanded: 20,
+    maxTokens: 0,
+    strategies: ["callers", "symbols"],
+  };
+}
+
+/**
+ * Format expanded results for plain text output.
+ */
+function formatExpandedPlain(
+  expanded: ExpandedResult,
+  projectRoot: string,
+): string {
+  const lines: string[] = [];
+
+  // Stats header
+  const { stats } = expanded;
+  lines.push(
+    `\n--- Expanded Results (${expanded.expanded.length} chunks) ---`,
+  );
+  lines.push(
+    `symbols: ${stats.symbolsResolved} | callers: ${stats.callersFound} | neighbors: ${stats.neighborsAdded}${
+      stats.budgetRemaining !== undefined
+        ? ` | tokens: ${stats.totalTokens} (${stats.budgetRemaining} remaining)`
+        : ""
+    }${expanded.truncated ? " [truncated]" : ""}`,
+  );
+  lines.push("");
+
+  // Group by relationship type
+  const byRelation = new Map<string, ExpansionNode[]>();
+  for (const node of expanded.expanded) {
+    const key = node.relationship;
+    if (!byRelation.has(key)) byRelation.set(key, []);
+    byRelation.get(key)!.push(node);
+  }
+
+  for (const [relation, nodes] of byRelation) {
+    lines.push(`[${relation}]`);
+    for (const node of nodes) {
+      const rawPath =
+        typeof (node.chunk.metadata as FileMetadata | undefined)?.path ===
+        "string"
+          ? ((node.chunk.metadata as FileMetadata).path as string)
+          : "Unknown";
+      const relPath = path.isAbsolute(rawPath)
+        ? path.relative(projectRoot, rawPath)
+        : rawPath;
+      const start = node.chunk.generated_metadata?.start_line ?? 0;
+      const defined = node.chunk.defined_symbols?.slice(0, 3).join(", ") || "";
+      lines.push(
+        `  ${relPath}:${start + 1} via="${node.via}" d=${node.depth}${
+          defined ? ` [${defined}]` : ""
+        }`,
+      );
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Format expanded results in compact TSV format.
+ */
+function formatExpandedCompact(
+  expanded: ExpandedResult,
+  projectRoot: string,
+): string {
+  const lines: string[] = [];
+  lines.push(`expanded\tcount=${expanded.expanded.length}\ttruncated=${expanded.truncated}`);
+  lines.push("path\tlines\trelation\tvia\tdepth\tdefined");
+
+  for (const node of expanded.expanded) {
+    const rawPath =
+      typeof (node.chunk.metadata as FileMetadata | undefined)?.path === "string"
+        ? ((node.chunk.metadata as FileMetadata).path as string)
+        : "Unknown";
+    const relPath = path.isAbsolute(rawPath)
+      ? path.relative(projectRoot, rawPath)
+      : rawPath;
+    const start = node.chunk.generated_metadata?.start_line ?? 0;
+    const end = node.chunk.generated_metadata?.end_line ?? start;
+    const defined = node.chunk.defined_symbols?.slice(0, 3).join(",") || "-";
+
+    lines.push(
+      [
+        relPath,
+        `${start + 1}-${end + 1}`,
+        node.relationship,
+        node.via,
+        String(node.depth),
+        defined,
+      ].join("\t"),
+    );
+  }
+
+  return lines.join("\n");
+}
 
 function toTextResults(data: SearchResponse["data"]): TextResult[] {
   return data.map((r) => {
@@ -262,99 +373,10 @@ function formatCompactTable(
   return formatCompactPretty(hits, projectRoot, query, termWidth, true);
 }
 
-// Reuse Skeletonizer instance
-let globalSkeletonizer: Skeletonizer | null = null;
-
-async function outputSkeletons(
-  results: any[],
-  projectRoot: string,
-  limit: number,
-  db?: VectorDB | null,
-): Promise<void> {
-  const seenPaths = new Set<string>();
-  const filesToProcess: string[] = [];
-
-  for (const result of results) {
-    const p = (result.metadata as any)?.path;
-    if (typeof p === "string" && !seenPaths.has(p)) {
-      seenPaths.add(p);
-      filesToProcess.push(p);
-      if (filesToProcess.length >= limit) break;
-    }
-  }
-
-  if (filesToProcess.length === 0) {
-    console.log("No skeleton matches found.");
-    return;
-  }
-
-  // Reuse or init skeletonizer for fallbacks
-  if (!globalSkeletonizer) {
-    globalSkeletonizer = new Skeletonizer();
-    // Lazy init only if we actually fallback
-  }
-
-  const skeletonOpts = { includeSummary: true };
-  const skeletonResults: Array<{
-    file: string;
-    skeleton: string;
-    tokens: number;
-    error?: string;
-  }> = [];
-
-  for (const relPath of filesToProcess) {
-    // 1. Try DB cache
-    if (db) {
-      const cached = await getStoredSkeleton(db, relPath);
-      if (cached) {
-        skeletonResults.push({
-          file: relPath,
-          skeleton: cached,
-          tokens: Math.ceil(cached.length / 4), // Rough estimate
-        });
-        continue;
-      }
-    }
-
-    // 2. Fallback to fresh generation
-    await globalSkeletonizer.init();
-    const absPath = path.resolve(projectRoot, relPath);
-    if (!fs.existsSync(absPath)) {
-      skeletonResults.push({
-        file: relPath,
-        skeleton: `// File not found: ${relPath}`,
-        tokens: 0,
-        error: "File not found",
-      });
-      continue;
-    }
-
-    const content = fs.readFileSync(absPath, "utf-8");
-    const res = await globalSkeletonizer.skeletonizeFile(
-      relPath,
-      content,
-      skeletonOpts,
-    );
-    skeletonResults.push({
-      file: relPath,
-      skeleton: res.skeleton,
-      tokens: res.tokenEstimate,
-      error: res.error,
-    });
-  }
-
-  // Since search doesn't support --json explicitly yet, we just print text.
-  // But if we ever add it, we have the structure.
-  for (const res of skeletonResults) {
-    console.log(res.skeleton);
-    console.log(""); // Separator
-  }
-}
-
 export const search: Command = new CommanderCommand("search")
   .description("File pattern searcher")
   .option(
-    "-m <max_count>, --max-count <max_count>",
+    "-m, --max-count <max_count>",
     "The maximum number of results to return (total)",
     "5",
   )
@@ -374,6 +396,12 @@ export const search: Command = new CommanderCommand("search")
   .option("--plain", "Disable ANSI colors and use simpler formatting", false)
 
   .option(
+    "--deep",
+    "Include related code (callers, definitions) for architectural context",
+    false,
+  )
+
+  .option(
     "-s, --sync",
     "Syncs the local files to the store before searching",
     false,
@@ -383,27 +411,22 @@ export const search: Command = new CommanderCommand("search")
     "Show what would be indexed without actually indexing",
     false,
   )
-  .option(
-    "--skeleton",
-    "Show code skeleton for matching files instead of snippets",
-    false,
-  )
   .argument("<pattern>", "The pattern to search for")
   .argument("[path]", "The path to search in")
   .allowUnknownOption(true)
   .allowExcessArguments(true)
   .action(async (pattern, exec_path, _options, cmd) => {
     const options: {
-      m: string;
+      maxCount: string;
       content: boolean;
       perFile: string;
       scores: boolean;
       minScore: string;
       compact: boolean;
       plain: boolean;
+      deep: boolean;
       sync: boolean;
       dryRun: boolean;
-      skeleton: boolean;
     } = cmd.optsWithGlobals();
 
     if (exec_path?.startsWith("--")) {
@@ -411,6 +434,9 @@ export const search: Command = new CommanderCommand("search")
     }
 
     const root = process.cwd();
+    const limitRaw = Number.parseInt(options.maxCount, 10);
+    const limit =
+      Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 5;
     const minScore = Number.isFinite(Number.parseFloat(options.minScore))
       ? Number.parseFloat(options.minScore)
       : 0;
@@ -422,94 +448,182 @@ export const search: Command = new CommanderCommand("search")
       findProjectRoot(execPathForServer) ?? execPathForServer;
     const server = getServerForProject(projectRootForServer);
 
-    if (server) {
+    if (process.env.DEBUG_SERVER) {
+      console.error(`[search] projectRootForServer: ${projectRootForServer}`);
+      console.error(`[search] server found: ${JSON.stringify(server)}`);
+    }
+
+    if (server && Number.isFinite(server.port) && server.port > 0) {
+      if (process.env.DEBUG_SERVER) {
+        console.error(`[search] attempting fetch to server on port ${server.port}`);
+      }
       try {
-        const response = await fetch(`http://localhost:${server.port}/search`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query: pattern,
-            limit: parseInt(options.m, 10),
-            path: exec_path
-              ? path.relative(projectRootForServer, path.resolve(exec_path))
-              : undefined,
-          }),
-        });
+        // Fast preflight so a hung server doesn't add multi-second latency.
+        const healthTimeoutMsRaw = Number.parseInt(
+          process.env.OSGREP_SERVER_HEALTH_TIMEOUT_MS || "",
+          10,
+        );
+        const healthTimeoutMs =
+          Number.isFinite(healthTimeoutMsRaw) && healthTimeoutMsRaw > 0
+            ? healthTimeoutMsRaw
+            : process.stdout.isTTY
+              ? 250
+              : 150;
+        {
+          const ac = new AbortController();
+          let timeout: NodeJS.Timeout | undefined;
+          try {
+            timeout = setTimeout(() => ac.abort(), healthTimeoutMs);
+            const health = await fetch(
+              `http://localhost:${server.port}/health`,
+              { signal: ac.signal },
+            );
+            if (!health.ok) throw new Error(`health_${health.status}`);
+          } finally {
+            if (timeout) clearTimeout(timeout);
+          }
+        }
 
-        if (response.ok) {
-          const body = (await response.json()) as { results: any[] };
+        const timeoutMsRaw = Number.parseInt(
+          process.env.OSGREP_SERVER_TIMEOUT_MS || "",
+          10,
+        );
+        const timeoutMs =
+          Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+            ? timeoutMsRaw
+            : process.stdout.isTTY
+              ? 1200
+              : 700;
+        const ac = new AbortController();
+        let timeout: NodeJS.Timeout | undefined;
+        try {
+          timeout = setTimeout(() => ac.abort(), timeoutMs);
 
-          const searchResult = { data: body.results };
-          const filteredData = searchResult.data.filter(
-            (r) => typeof r.score !== "number" || r.score >= minScore,
+          const response = await fetch(
+            `http://localhost:${server.port}/search`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                query: pattern,
+                limit,
+                path: exec_path
+                  ? path.relative(projectRootForServer, path.resolve(exec_path))
+                  : undefined,
+                deep: options.deep,
+              }),
+              signal: ac.signal,
+            },
           );
 
-          if (options.skeleton) {
-            await outputSkeletons(
-              filteredData,
-              projectRootForServer,
-              parseInt(options.m, 10),
-              // Server doesn't easily expose DB instance here in HTTP client mode,
-              // but we are in client. Wait, this text implies "Server Search" block.
-              // Client talks to server. The server returns JSON.
-              // We don't have DB access here.
-              // So we pass null, and it will fallback to generating local skeleton (if file exists locally).
-              // This is acceptable for Phase 3.
-              null,
+          if (process.env.DEBUG_SERVER) {
+            console.error(`[search] server response status: ${response.status}`);
+          }
+          if (response.ok) {
+            if (process.env.DEBUG_SERVER) {
+              console.error("[search] server returned OK, using server results");
+            }
+            const body = (await response.json()) as {
+              results: any[];
+              partial?: boolean;
+              initialSync?: {
+                filesProcessed: number;
+                filesIndexed: number;
+                totalFiles: number;
+              };
+              expanded?: ExpandedResult;
+            };
+
+            // Show warning if results are partial (server still indexing)
+            if (body.partial && body.initialSync) {
+              const { filesProcessed, filesIndexed } = body.initialSync;
+              console.warn(
+                `⚠️  Index building (${filesProcessed} files processed, ${filesIndexed} indexed). Results may be incomplete.`,
+              );
+            }
+
+            const searchResult = { data: body.results };
+            const filteredData = searchResult.data.filter(
+              (r) => typeof r.score !== "number" || r.score >= minScore,
             );
-            return;
-          }
 
-          const compactHits = options.compact
-            ? toCompactHits(filteredData)
-            : [];
+            const compactHits = options.compact
+              ? toCompactHits(filteredData)
+              : [];
 
-          if (options.compact) {
-            const compactText = compactHits.length
-              ? formatCompactTable(compactHits, projectRootForServer, pattern, {
-                isTTY: !!process.stdout.isTTY,
-                plain: !!options.plain,
-              })
-              : "No matches found.";
-            console.log(compactText);
-            return; // EXIT
-          }
+            if (options.compact) {
+              const compactText = compactHits.length
+                ? formatCompactTable(
+                  compactHits,
+                  projectRootForServer,
+                  pattern,
+                  {
+                    isTTY: !!process.stdout.isTTY,
+                    plain: !!options.plain,
+                  },
+                )
+                : "No matches found.";
+              console.log(compactText);
+              // Add expanded results in compact format
+              if (body.expanded && body.expanded.expanded.length > 0) {
+                console.log("");
+                console.log(formatExpandedCompact(body.expanded, projectRootForServer));
+              }
+              return; // EXIT
+            }
 
-          if (!filteredData.length) {
-            console.log("No matches found.");
-            return; // EXIT
-          }
+            if (!filteredData.length) {
+              console.log("No matches found.");
+              return; // EXIT
+            }
 
-          const isTTY = process.stdout.isTTY;
-          const shouldBePlain = options.plain || !isTTY;
+            const isTTY = process.stdout.isTTY;
+            const shouldBePlain = options.plain || !isTTY;
 
-          if (shouldBePlain) {
-            const mappedResults = toTextResults(filteredData);
-            const output = formatTextResults(
-              mappedResults,
-              pattern,
-              projectRootForServer,
-              {
-                isPlain: true,
-                compact: options.compact,
+            if (shouldBePlain) {
+              const mappedResults = toTextResults(filteredData);
+              const output = formatTextResults(
+                mappedResults,
+                pattern,
+                projectRootForServer,
+                {
+                  isPlain: true,
+                  compact: options.compact,
+                  content: options.content,
+                  perFile: parseInt(options.perFile, 10),
+                  showScores: options.scores,
+                },
+              );
+              console.log(output);
+              // Add expanded results
+              if (body.expanded && body.expanded.expanded.length > 0) {
+                console.log(formatExpandedPlain(body.expanded, projectRootForServer));
+              }
+            } else {
+              const { formatResults } = await import("../lib/output/formatter");
+              const output = formatResults(filteredData, projectRootForServer, {
                 content: options.content,
-                perFile: parseInt(options.perFile, 10),
-                showScores: options.scores,
-              },
-            );
-            console.log(output);
-          } else {
-            const { formatResults } = await import("../lib/output/formatter");
-            const output = formatResults(filteredData, projectRootForServer, {
-              content: options.content,
-            });
-            console.log(output);
-          }
+              });
+              console.log(output);
+              // Add expanded results in plain format
+              if (body.expanded && body.expanded.expanded.length > 0) {
+                console.log(formatExpandedPlain(body.expanded, projectRootForServer));
+              }
+            }
 
-          return; // EXIT successful server search
+            return; // EXIT successful server search
+          }
+        } finally {
+          if (timeout) clearTimeout(timeout);
         }
       } catch (e) {
-        if (process.env.DEBUG) {
+        // If the server isn't reachable, remove the stale registry entry so we
+        // don't pay this timeout cost on every query.
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("ECONNREFUSED") || msg.includes("health_")) {
+          unregisterServer(server.pid);
+        }
+        if (process.env.DEBUG || process.env.DEBUG_SERVER) {
           console.error(
             "[search] server request failed, falling back to local:",
             e,
@@ -518,8 +632,20 @@ export const search: Command = new CommanderCommand("search")
       }
     }
 
+    if (process.env.DEBUG_SERVER) {
+      console.error("[search] falling through to local search");
+    }
+
     try {
+      const DEBUG_TIMING = process.env.DEBUG_SEARCH_TIMING === "1";
+      const t = (label: string) => DEBUG_TIMING && console.time(`[cmd] ${label}`);
+      const te = (label: string) => DEBUG_TIMING && console.timeEnd(`[cmd] ${label}`);
+
+      t("total-cmd");
+      t("ensureSetup");
       await ensureSetup();
+      te("ensureSetup");
+
       const searchRoot = exec_path ? path.resolve(exec_path) : root;
       const projectRoot = findProjectRoot(searchRoot) ?? searchRoot;
       const paths = ensureProjectPaths(projectRoot);
@@ -527,7 +653,9 @@ export const search: Command = new CommanderCommand("search")
       // Propagate project root to worker processes
       process.env.OSGREP_PROJECT_ROOT = projectRoot;
 
+      t("VectorDB-init");
       vectorDb = new VectorDB(paths.lancedbDir);
+      te("VectorDB-init");
 
       // Check for active indexing lock and warn if present
       // This allows agents (via shim) to know results might be partial.
@@ -537,7 +665,9 @@ export const search: Command = new CommanderCommand("search")
         );
       }
 
+      t("hasAnyRows");
       const hasRows = await vectorDb.hasAnyRows();
+      te("hasAnyRows");
       const needsSync = options.sync || !hasRows;
 
       if (needsSync) {
@@ -599,28 +729,31 @@ export const search: Command = new CommanderCommand("search")
       }
 
       const searcher = new Searcher(vectorDb);
+      const expandOpts = getDeepExpandOptions(options.deep);
 
+      t("searcher.search");
       const searchResult = await searcher.search(
         pattern,
-        parseInt(options.m, 10),
+        limit,
         { rerank: true },
         undefined,
         exec_path ? path.relative(projectRoot, path.resolve(exec_path)) : "",
       );
+      te("searcher.search");
+
+      // Expand results if requested (Phase 1-4 expansion)
+      let expanded: ExpandedResult | undefined;
+      if (expandOpts && searchResult.data.length > 0) {
+        t("searcher.expand");
+        expanded = await searcher.expand(searchResult.data, pattern, expandOpts);
+        te("searcher.expand");
+      }
+
+      te("total-cmd");
 
       const filteredData = searchResult.data.filter(
         (r) => typeof r.score !== "number" || r.score >= minScore,
       );
-
-      if (options.skeleton) {
-        await outputSkeletons(
-          filteredData,
-          projectRoot,
-          parseInt(options.m, 10),
-          vectorDb,
-        );
-        return;
-      }
 
       const compactHits = options.compact ? toCompactHits(filteredData) : [];
       const compactText =
@@ -640,6 +773,11 @@ export const search: Command = new CommanderCommand("search")
 
       if (options.compact) {
         console.log(compactText);
+        // Add expanded results in compact format
+        if (expanded && expanded.expanded.length > 0) {
+          console.log("");
+          console.log(formatExpandedCompact(expanded, projectRoot));
+        }
         return;
       }
 
@@ -656,6 +794,10 @@ export const search: Command = new CommanderCommand("search")
           showScores: options.scores,
         });
         console.log(output);
+        // Add expanded results
+        if (expanded && expanded.expanded.length > 0) {
+          console.log(formatExpandedPlain(expanded, projectRoot));
+        }
       } else {
         // Use new holographic formatter for TTY
         const { formatResults } = await import("../lib/output/formatter");
@@ -663,6 +805,10 @@ export const search: Command = new CommanderCommand("search")
           content: options.content,
         });
         console.log(output);
+        // Add expanded results in plain format (for now)
+        if (expanded && expanded.expanded.length > 0) {
+          console.log(formatExpandedPlain(expanded, projectRoot));
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";

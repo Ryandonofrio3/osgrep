@@ -25,33 +25,11 @@ export const CONFIG = {
   QUERY_PREFIX: "",
 };
 
-export const WORKER_TIMEOUT_MS = Number.parseInt(
-  process.env.OSGREP_WORKER_TIMEOUT_MS || "60000",
-  10,
-);
-
-export const WORKER_BOOT_TIMEOUT_MS = Number.parseInt(
-  process.env.OSGREP_WORKER_BOOT_TIMEOUT_MS || "300000",
-  10,
-);
-
-export const MAX_WORKER_MEMORY_MB = Number.parseInt(
-  process.env.OSGREP_MAX_WORKER_MEMORY_MB ||
-    String(
-      Math.max(
-        2048,
-        Math.floor((os.totalmem() / 1024 / 1024) * 0.5), // 50% of system RAM
-      ),
-    ),
-  10,
-);
-
 const HOME = os.homedir();
 const GLOBAL_ROOT = path.join(HOME, ".osgrep");
 
 export const PATHS = {
   globalRoot: GLOBAL_ROOT,
-  models: path.join(GLOBAL_ROOT, "models"),
   grammars: path.join(GLOBAL_ROOT, "grammars"),
 };
 

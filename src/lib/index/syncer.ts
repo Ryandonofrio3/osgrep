@@ -7,8 +7,7 @@ import { VectorDB } from "../store/vector-db";
 import { isIndexableFile } from "../utils/file-utils";
 import { acquireWriterLockWithRetry, type LockHandle } from "../utils/lock";
 import { ensureProjectPaths } from "../utils/project-root";
-import { getWorkerPool } from "../workers/pool";
-import type { ProcessFileResult } from "../workers/worker";
+import { processFile, type ProcessFileResult } from "../workers/orchestrator";
 import type { InitialSyncProgress, InitialSyncResult } from "./sync-helpers";
 import { walk } from "./walker";
 
@@ -119,7 +118,6 @@ export async function initialSync(
     let total = 0;
     onProgress?.({ processed: 0, indexed: 0, total, filePath: "Scanning..." });
 
-    const pool = getWorkerPool();
     const cachedPaths =
       dryRun || treatAsEmptyCache
         ? new Set<string>()
@@ -187,28 +185,15 @@ export async function initialSync(
       await flushLock;
     };
 
-    const isTimeoutError = (err: unknown) =>
-      err instanceof Error && err.message?.toLowerCase().includes("timed out");
-
     const processFileWithRetry = async (
       relPath: string,
       absPath: string,
     ): Promise<ProcessFileResult> => {
-      let retries = 0;
-      while (true) {
-        try {
-          return await pool.processFile({
-            path: relPath,
-            absolutePath: absPath,
-          });
-        } catch (err) {
-          if (isTimeoutError(err) && retries === 0) {
-            retries += 1;
-            continue;
-          }
-          throw err;
-        }
-      }
+      // No retries needed - native embedding is stable
+      return await processFile({
+        path: relPath,
+        absolutePath: absPath,
+      });
     };
 
     const schedule = async (task: () => Promise<void>) => {

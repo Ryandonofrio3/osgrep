@@ -1,18 +1,8 @@
 import * as path from "node:path";
 import { highlight } from "cli-highlight";
-import { getLanguageByExtension } from "../core/languages";
+import { getLanguageByExtension } from "../store/languages";
 import type { ChunkType, FileMetadata } from "../store/types";
-
-const useColors = process.stdout.isTTY && !process.env.NO_COLOR;
-
-const style = {
-  bold: (s: string) => (useColors ? `\x1b[1m${s}\x1b[22m` : s),
-  dim: (s: string) => (useColors ? `\x1b[2m${s}\x1b[22m` : s),
-  green: (s: string) => (useColors ? `\x1b[32m${s}\x1b[39m` : s),
-  blue: (s: string) => (useColors ? `\x1b[34m${s}\x1b[39m` : s),
-  cyan: (s: string) => (useColors ? `\x1b[36m${s}\x1b[39m` : s),
-  gray: (s: string) => (useColors ? `\x1b[90m${s}\x1b[39m` : s),
-};
+import { style } from "../utils/ansi";
 
 function detectLanguage(filePath: string): string {
   const ext = path.extname(filePath);
@@ -117,50 +107,3 @@ export function formatResults(
   return results.map((r) => formatResult(r, root, options)).join("\n\n");
 }
 
-import type { GraphNode } from "../graph/graph-builder";
-
-export function formatTrace(graph: {
-  center: GraphNode | null;
-  callers: GraphNode[];
-  callees: string[];
-}): string {
-  if (!graph.center) {
-    return style.dim("Symbol not found.");
-  }
-
-  const lines: string[] = [];
-
-  // 1. Callers (Upstream)
-  if (graph.callers.length > 0) {
-    lines.push(style.bold("Callers (Who calls this?):"));
-    graph.callers.forEach((caller) => {
-      lines.push(
-        `  ${style.blue("↑")} ${style.green(caller.symbol)} ${style.dim(`(${caller.file}:${caller.line})`)}`,
-      );
-    });
-    lines.push("");
-  } else {
-    lines.push(style.dim("No known callers."));
-    lines.push("");
-  }
-
-  // 2. Center (The Symbol)
-  lines.push(style.bold("▶ " + graph.center.symbol));
-  lines.push(
-    `  ${style.dim(`Defined in ${graph.center.file}:${graph.center.line}`)}`,
-  );
-  lines.push(`  ${style.dim(`Role: ${graph.center.role}`)}`);
-  lines.push("");
-
-  // 3. Callees (Downstream)
-  if (graph.callees.length > 0) {
-    lines.push(style.bold("Callees (What does this call?):"));
-    graph.callees.forEach((callee) => {
-      lines.push(`  ${style.cyan("↓")} ${callee}`);
-    });
-  } else {
-    lines.push(style.dim("No known callees."));
-  }
-
-  return lines.join("\n");
-}

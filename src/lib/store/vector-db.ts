@@ -6,7 +6,6 @@ import {
   Field,
   FixedSizeList,
   Float32,
-  Float64,
   Int32,
   List,
   Schema,
@@ -56,8 +55,6 @@ export class VectorDB {
       is_exported: false,
       vector: Array(CONFIG.VECTOR_DIM).fill(0),
       colbert: Buffer.alloc(0),
-      colbert_scale: 1,
-      pooled_colbert_48d: Array(CONFIG.COLBERT_DIM).fill(0),
       doc_token_ids: [],
       defined_symbols: [],
       referenced_symbols: [],
@@ -108,15 +105,6 @@ export class VectorDB {
       new Field("complexity", new Float32(), true),
       new Field("is_exported", new Bool(), true),
       new Field("colbert", new Binary(), true),
-      new Field("colbert_scale", new Float64(), true),
-      new Field(
-        "pooled_colbert_48d",
-        new FixedSizeList(
-          CONFIG.COLBERT_DIM,
-          new Field("item", new Float32(), false),
-        ),
-        true,
-      ),
       new Field(
         "doc_token_ids",
         new List(new Field("item", new Int32(), true)),
@@ -232,12 +220,7 @@ export class VectorDB {
         is_exported: rec.is_exported ?? false,
         vector: vec,
         colbert: toBuffer(rec.colbert),
-        colbert_scale:
-          typeof rec.colbert_scale === "number" ? rec.colbert_scale : 1,
-        pooled_colbert_48d: rec.pooled_colbert_48d
-          ? Array.from(rec.pooled_colbert_48d)
-          : undefined,
-        doc_token_ids: rec.doc_token_ids ? Array.from(rec.doc_token_ids) : null,
+        doc_token_ids: rec.doc_token_ids ? Array.from(rec.doc_token_ids) : [],
         defined_symbols: rec.defined_symbols ?? [],
         referenced_symbols: rec.referenced_symbols ?? [],
         imports: rec.imports ?? [],

@@ -1,4 +1,3 @@
-import { destroyWorkerPool, isWorkerPoolInitialized } from "../workers/pool";
 import { runCleanup } from "./cleanup";
 
 export async function gracefulExit(code?: number): Promise<void> {
@@ -8,14 +7,6 @@ export async function gracefulExit(code?: number): Promise<void> {
       : typeof process.exitCode === "number"
         ? process.exitCode
         : 0;
-
-  try {
-    if (isWorkerPoolInitialized()) {
-      await destroyWorkerPool();
-    }
-  } catch (err) {
-    console.error("[exit] Failed to destroy worker pool:", err);
-  }
 
   await runCleanup();
 

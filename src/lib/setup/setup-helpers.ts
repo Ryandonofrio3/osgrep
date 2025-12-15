@@ -1,23 +1,19 @@
 import * as fs from "node:fs";
 import ora from "ora";
 import { PATHS } from "../../config";
-import { areModelsDownloaded, downloadModels } from "./model-loader";
 
 export interface SetupPaths {
   root: string;
-  models: string;
   grammars: string;
 }
 
 export interface SetupStatus extends SetupPaths {
   createdDirs: boolean;
-  downloadedModels: boolean;
 }
 
 function getPaths(): SetupPaths {
   return {
     root: PATHS.globalRoot,
-    models: PATHS.models,
     grammars: PATHS.grammars,
   };
 }
@@ -32,7 +28,7 @@ export async function ensureSetup({
   silent?: boolean;
 } = {}): Promise<SetupStatus> {
   const paths = getPaths();
-  const dirs = [paths.root, paths.models, paths.grammars];
+  const dirs = [paths.root, paths.grammars];
 
   const needsDirs = dirs.some((dir) => !fs.existsSync(dir));
   let createdDirs = false;
@@ -56,22 +52,5 @@ export async function ensureSetup({
     throw error;
   }
 
-  const modelsPresent = areModelsDownloaded();
-  let downloadedModels = false;
-
-  if (!modelsPresent) {
-    const modelSpinner = !silent
-      ? ora("Downloading models (first run)...").start()
-      : null;
-    try {
-      await downloadModels();
-      downloadedModels = true;
-      modelSpinner?.succeed("Models downloaded and ready");
-    } catch (error) {
-      modelSpinner?.fail("Failed to download models");
-      throw error;
-    }
-  }
-
-  return { ...paths, createdDirs, downloadedModels };
+  return { ...paths, createdDirs };
 }

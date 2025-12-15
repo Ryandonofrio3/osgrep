@@ -1,6 +1,6 @@
-import type { VectorRecord } from "../store/types";
 import type { VectorDB } from "../store/vector-db";
-import { escapeSqlString } from "../utils/filter-builder";
+import type { VectorRecord } from "../store/types";
+import { escapeSqlString, normalizePath } from "../utils/filter-builder";
 
 export interface GraphNode {
   symbol: string;
@@ -8,122 +8,166 @@ export interface GraphNode {
   line: number;
   role: string;
   calls: string[];
-  calledBy: string[];
-  complexity?: number;
+}
+
+export interface CallGraph {
+  center: GraphNode | null;
+  callers: GraphNode[];
+  callees: string[];
+}
+
+export interface TraceOptions {
+  depth?: number;
+  callersOnly?: boolean;
+  calleesOnly?: boolean;
+  pathPrefix?: string;
 }
 
 export class GraphBuilder {
   constructor(private db: VectorDB) {}
 
   /**
-   * Find all chunks that call the given symbol.
+   * Find all chunks where the symbol is defined.
+   * Returns multiple if the same symbol is defined in different files.
    */
-  async getCallers(symbol: string): Promise<GraphNode[]> {
+  async findDefinitions(symbol: string): Promise<GraphNode[]> {
     const table = await this.db.ensureTable();
-    const escaped = escapeSqlString(symbol);
+    const whereClause = `array_contains(defined_symbols, '${escapeSqlString(symbol)}')`;
 
-    // Find chunks where referenced_symbols contains the symbol
-    const rows = await table
+    const records = (await table
       .query()
-      .where(`array_contains(referenced_symbols, '${escaped}')`)
-      .limit(100)
-      .toArray();
+      .where(whereClause)
+      .limit(20)
+      .toArray()) as VectorRecord[];
 
-    return rows.map((row) =>
-      this.mapRowToNode(row as unknown as VectorRecord, symbol, "caller"),
-    );
+    return records.map((r) => this.recordToNode(r, symbol));
   }
 
   /**
-   * Find what the given symbol calls.
-   * First finds the definition of the symbol, then returns its referenced_symbols.
+   * Find chunks that reference (call) the given symbol.
+   * Excludes chunks that also define the symbol (to avoid self-references).
    */
-  async getCallees(symbol: string): Promise<string[]> {
+  async findCallers(symbol: string, limit = 20): Promise<GraphNode[]> {
     const table = await this.db.ensureTable();
-    const escaped = escapeSqlString(symbol);
+    const whereClause = `array_contains(referenced_symbols, '${escapeSqlString(symbol)}')`;
 
-    // Find the definition of the symbol
-    const rows = await table
+    const records = (await table
       .query()
-      .where(`array_contains(defined_symbols, '${escaped}')`)
-      .limit(1)
-      .toArray();
+      .where(whereClause)
+      .limit(limit + 20) // Fetch extra to filter self-definitions
+      .toArray()) as VectorRecord[];
 
-    if (rows.length === 0) return [];
+    // Filter out self-definitions (where this chunk also defines the symbol)
+    const filtered = records.filter((r) => {
+      const defined = this.toStringArray(r.defined_symbols);
+      return !defined.includes(symbol);
+    });
 
-    const record = rows[0] as unknown as VectorRecord;
-    return record.referenced_symbols || [];
+    return filtered.slice(0, limit).map((r) => {
+      // Find the primary symbol for this chunk (caller)
+      const defined = this.toStringArray(r.defined_symbols);
+      const callerSymbol = defined[0] || r.parent_symbol || "(anonymous)";
+      return this.recordToNode(r, callerSymbol);
+    });
   }
 
   /**
-   * Build a 1-hop graph around a symbol.
+   * Given a list of symbol names, return only those that have definitions
+   * in the index (i.e., internal to the project, not external libraries).
    */
-  async buildGraph(symbol: string): Promise<{
-    center: GraphNode | null;
-    callers: GraphNode[];
-    callees: string[];
-  }> {
+  async filterToInternal(symbols: string[]): Promise<string[]> {
+    if (symbols.length === 0) return [];
+
     const table = await this.db.ensureTable();
-    const escaped = escapeSqlString(symbol);
+    const internal: string[] = [];
 
-    // 1. Get Center (Definition)
-    const centerRows = await table
-      .query()
-      .where(`array_contains(defined_symbols, '${escaped}')`)
-      .limit(1)
-      .toArray();
+    // Batch check which symbols have definitions
+    // For efficiency, we use a single query with OR conditions
+    // But LanceDB doesn't support OR in array_contains well, so we check individually
+    // This is acceptable since callees are typically <20 per function
+    for (const sym of symbols) {
+      const whereClause = `array_contains(defined_symbols, '${escapeSqlString(sym)}')`;
+      const records = await table.query().where(whereClause).limit(1).toArray();
+      if (records.length > 0) {
+        internal.push(sym);
+      }
+    }
 
-    const center =
-      centerRows.length > 0
-        ? this.mapRowToNode(
-            centerRows[0] as unknown as VectorRecord,
-            symbol,
-            "center",
-          )
-        : null;
+    return internal;
+  }
 
-    // 2. Get Callers
-    const callers = await this.getCallers(symbol);
+  /**
+   * Build the call graph for a symbol.
+   * Returns the definition (center), callers, and callees (filtered to internal).
+   */
+  async buildGraph(
+    symbol: string,
+    options?: TraceOptions,
+  ): Promise<CallGraph> {
+    const { callersOnly, calleesOnly, pathPrefix } = options || {};
 
-    // 3. Get Callees (from center)
-    const callees = center ? center.calls : [];
+    // Find definitions
+    let definitions = await this.findDefinitions(symbol);
+
+    // Apply path prefix filter if specified
+    if (pathPrefix) {
+      const normalizedPrefix = normalizePath(pathPrefix);
+      definitions = definitions.filter((d) =>
+        d.file.startsWith(normalizedPrefix),
+      );
+    }
+
+    // For now, take the first definition as center (could show all)
+    const center = definitions[0] || null;
+
+    // Get callers if not callees-only
+    let callers: GraphNode[] = [];
+    if (!calleesOnly) {
+      callers = await this.findCallers(symbol);
+      if (pathPrefix) {
+        const normalizedPrefix = normalizePath(pathPrefix);
+        callers = callers.filter((c) => c.file.startsWith(normalizedPrefix));
+      }
+    }
+
+    // Get callees if not callers-only
+    let callees: string[] = [];
+    if (!callersOnly && center) {
+      // Get the raw referenced_symbols from the center definition
+      const rawCallees = center.calls;
+      // Filter to only internal symbols (have definitions in index)
+      callees = await this.filterToInternal(rawCallees);
+    }
 
     return { center, callers, callees };
   }
 
-  private mapRowToNode(
-    row: VectorRecord,
-    targetSymbol: string,
-    type: "center" | "caller",
-  ): GraphNode {
-    // Helper to convert Arrow Vector to array if needed
-    const toArray = (val: any): string[] => {
-      if (val && typeof val.toArray === "function") {
-        return val.toArray();
-      }
-      return Array.isArray(val) ? val : [];
-    };
-
-    const definedSymbols = toArray(row.defined_symbols);
-    const referencedSymbols = toArray(row.referenced_symbols);
-
-    // If it's a caller, the symbol of interest is the one DOING the calling.
-    // We try to find the defined symbol in this chunk that is responsible for the call.
-    // If multiple are defined, we pick the first one or the parent_symbol.
-
-    let symbol = definedSymbols[0] || row.parent_symbol || "unknown";
-    if (type === "center") {
-      symbol = targetSymbol;
-    }
-
+  private recordToNode(record: VectorRecord, symbol: string): GraphNode {
     return {
       symbol,
-      file: row.path,
-      line: row.start_line,
-      role: row.role || "IMPLEMENTATION",
-      calls: referencedSymbols,
-      calledBy: [], // To be filled if we do reverse lookup
-      complexity: row.complexity,
+      file: record.path,
+      line: record.start_line,
+      role: record.role || "IMPL",
+      calls: this.toStringArray(record.referenced_symbols),
     };
+  }
+
+  private toStringArray(val: unknown): string[] {
+    if (!val) return [];
+    if (Array.isArray(val)) {
+      return val.filter((v) => typeof v === "string");
+    }
+    if (typeof (val as any).toArray === "function") {
+      try {
+        const arr = (val as any).toArray();
+        if (Array.isArray(arr)) return arr.filter((v) => typeof v === "string");
+        return Array.from(arr || []).filter(
+          (v) => typeof v === "string",
+        ) as string[];
+      } catch {
+        return [];
+      }
+    }
+    return [];
   }
 }

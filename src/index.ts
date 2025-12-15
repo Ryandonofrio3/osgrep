@@ -2,18 +2,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { program } from "commander";
-import { installClaudeCode } from "./commands/claude-code";
-import { installCodex } from "./commands/codex";
-import { doctor } from "./commands/doctor";
-import { installDroid } from "./commands/droid";
+import { installClaudeCode } from "./commands/agent/claude-code";
+import { installCodex } from "./commands/agent/codex";
+import { doctor } from "./commands/utility/doctor";
+import { installDroid } from "./commands/agent/droid";
 import { index } from "./commands/index";
-import { list } from "./commands/list";
-import { mcp } from "./commands/mcp";
-import { installOpencode, uninstallOpencode } from "./commands/opencode";
+import { list } from "./commands/utility/list";
+import { mcp } from "./commands/agent/mcp";
+import { installOpencode, uninstallOpencode } from "./commands/agent/opencode";
 import { search } from "./commands/search";
 import { serve } from "./commands/serve";
 import { setup } from "./commands/setup";
-import { skeleton } from "./commands/skeleton";
 import { symbols } from "./commands/symbols";
 import { trace } from "./commands/trace";
 
@@ -48,7 +47,6 @@ if (isIndexCommand && fs.existsSync(legacyDataPath)) {
 program.addCommand(search, { isDefault: true });
 program.addCommand(index);
 program.addCommand(list);
-program.addCommand(skeleton);
 program.addCommand(symbols);
 program.addCommand(trace);
 program.addCommand(setup);

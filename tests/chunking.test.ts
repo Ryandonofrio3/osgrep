@@ -71,8 +71,7 @@ function example() {}`;
       },
       "/repo/path/file.ts",
     );
-    expect(displayText).toContain("// /repo/path/file.ts");
-    expect(displayText).toContain("File: /repo/path/file.ts");
+    expect(displayText).toContain("// File: /repo/path/file.ts");
     expect(displayText).toContain("code");
   });
 });

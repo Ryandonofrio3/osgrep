@@ -1,16 +1,24 @@
-import * as fs from "node:fs";
+/**
+ * Orchestrator: Coordinates file processing and embedding
+ *
+ * This module handles:
+ * - File reading and validation
+ * - Chunking via tree-sitter
+ * - Embedding via native Rust code
+ *
+ * No worker pool needed - Rust ONNX Runtime is fast and stable.
+ */
+
+import * as crypto from "node:crypto";
 import * as path from "node:path";
-import { env } from "@huggingface/transformers";
-import * as ort from "onnxruntime-node";
-import { v4 as uuidv4 } from "uuid";
-import { CONFIG, PATHS } from "../../config";
+import { CONFIG } from "../../config";
 import {
   buildAnchorChunk,
   type ChunkWithContext,
   formatChunkText,
   TreeSitterChunker,
 } from "../index/chunker";
-import { Skeletonizer } from "../skeleton";
+import { embedBatch, initNative, encodeQueryColbert, rerankColbert } from "../native";
 import type { PreparedChunk, VectorRecord } from "../store/types";
 import {
   computeBufferHash,
@@ -18,9 +26,10 @@ import {
   isIndexableFile,
   readFileSnapshot,
 } from "../utils/file-utils";
-import { maxSim } from "./colbert-math";
-import { ColbertModel, type HybridResult } from "./embeddings/colbert";
-import { GraniteModel } from "./embeddings/granite";
+
+// =============================================================================
+// Types
+// =============================================================================
 
 export type ProcessFileInput = {
   path: string;
@@ -37,52 +46,26 @@ export type ProcessFileResult = {
 
 export type RerankDoc = {
   colbert: Buffer | Int8Array | number[];
-  scale: number;
   token_ids?: number[];
 };
 
-const CACHE_DIR = PATHS.models;
-const LOG_MODELS =
-  process.env.OSGREP_DEBUG_MODELS === "1" ||
-  process.env.OSGREP_DEBUG_MODELS === "true";
-const log = (...args: unknown[]) => {
-  if (LOG_MODELS) console.log(...args);
-};
-
-env.cacheDir = CACHE_DIR;
-env.allowLocalModels = true;
-env.allowRemoteModels = true;
+// =============================================================================
+// Orchestrator
+// =============================================================================
 
 const PROJECT_ROOT = process.env.OSGREP_PROJECT_ROOT
   ? path.resolve(process.env.OSGREP_PROJECT_ROOT)
   : process.cwd();
-const LOCAL_MODELS = path.join(PROJECT_ROOT, "models");
-if (fs.existsSync(LOCAL_MODELS)) {
-  env.localModelPath = LOCAL_MODELS;
-  log(`Worker: Using local models from ${LOCAL_MODELS}`);
-}
 
 export class WorkerOrchestrator {
-  private granite = new GraniteModel();
-  private colbert = new ColbertModel();
   private chunker = new TreeSitterChunker();
-  private skeletonizer = new Skeletonizer();
   private initPromise: Promise<void> | null = null;
-  private readonly vectorDimensions = CONFIG.VECTOR_DIM;
 
   private async ensureReady() {
-    if (this.granite.isReady() && this.colbert.isReady()) {
-      return;
-    }
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
-      await Promise.all([
-        this.chunker.init(),
-        this.skeletonizer.init(),
-        this.granite.load(),
-        this.colbert.load(),
-      ]);
+      await Promise.all([this.chunker.init(), initNative()]);
     })().finally(() => {
       this.initPromise = null;
     });
@@ -90,46 +73,14 @@ export class WorkerOrchestrator {
     return this.initPromise;
   }
 
-  private async computeHybrid(
-    texts: string[],
-    onProgress?: () => void,
-  ): Promise<HybridResult[]> {
-    if (!texts.length) return [];
-    await this.ensureReady();
-
-    const results: HybridResult[] = [];
-    const envBatch = Number.parseInt(
-      process.env.OSGREP_WORKER_BATCH_SIZE ?? "",
-      10,
-    );
-    const BATCH_SIZE =
-      Number.isFinite(envBatch) && envBatch > 0
-        ? Math.max(4, Math.min(16, envBatch))
-        : 16;
-    for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-      if (i > 0) onProgress?.();
-      const batchTexts = texts.slice(i, i + BATCH_SIZE);
-      const denseBatch = await this.granite.runBatch(batchTexts);
-      const colbertBatch = await this.colbert.runBatch(
-        batchTexts,
-        denseBatch,
-        this.vectorDimensions,
-      );
-      results.push(...colbertBatch);
-    }
-    onProgress?.();
-
-    return results;
-  }
-
   private async chunkFile(
     pathname: string,
-    content: string,
+    content: string
   ): Promise<ChunkWithContext[]> {
     await this.ensureReady();
     const { chunks: parsedChunks, metadata } = await this.chunker.chunk(
       pathname,
-      content,
+      content
     );
 
     const anchorChunk = buildAnchorChunk(pathname, content, metadata);
@@ -159,12 +110,11 @@ export class WorkerOrchestrator {
   }
 
   private toPreparedChunks(
-    path: string,
+    filePath: string,
     hash: string,
-    chunks: ChunkWithContext[],
-    skeleton?: string,
+    chunks: ChunkWithContext[]
   ): PreparedChunk[] {
-    const texts = chunks.map((chunk) => formatChunkText(chunk, path));
+    const texts = chunks.map((chunk) => formatChunkText(chunk, filePath));
     const prepared: PreparedChunk[] = [];
 
     for (let i = 0; i < texts.length; i++) {
@@ -174,11 +124,11 @@ export class WorkerOrchestrator {
       const next = texts[i + 1]?.displayText;
 
       prepared.push({
-        id: uuidv4(),
-        path,
+        id: crypto.randomUUID(),
+        path: filePath,
         hash,
-        content: content, // Now minimal
-        display_text: displayText, // Now rich
+        content,
+        display_text: displayText,
         context_prev: typeof prev === "string" ? prev : undefined,
         context_next: typeof next === "string" ? next : undefined,
         start_line: chunk.startLine,
@@ -192,7 +142,6 @@ export class WorkerOrchestrator {
         referenced_symbols: chunk.referencedSymbols,
         role: chunk.role,
         parent_symbol: chunk.parentSymbol,
-        file_skeleton: chunk.isAnchor ? skeleton : undefined,
       });
     }
 
@@ -201,7 +150,7 @@ export class WorkerOrchestrator {
 
   async processFile(
     input: ProcessFileInput,
-    onProgress?: () => void,
+    onProgress?: () => void
   ): Promise<ProcessFileResult> {
     const absolutePath = path.isAbsolute(input.path)
       ? input.path
@@ -225,49 +174,26 @@ export class WorkerOrchestrator {
     onProgress?.();
 
     const content = buffer.toString("utf-8");
-    const chunksPromise = this.chunkFile(input.path, content);
-
-    // Generate skeleton in parallel
-    const skeletonPromise = this.skeletonizer.skeletonizeFile(
-      input.path,
-      content,
-      {
-        includeSummary: true,
-      },
-    );
-
-    const [chunks, skeletonResult] = await Promise.all([
-      chunksPromise,
-      skeletonPromise,
-    ]);
+    const chunks = await this.chunkFile(input.path, content);
     onProgress?.();
 
     if (!chunks.length) return { vectors: [], hash, mtimeMs, size };
 
-    const preparedChunks = this.toPreparedChunks(
-      input.path,
-      hash,
-      chunks,
-      skeletonResult.success ? skeletonResult.skeleton : undefined,
-    );
-    const hybrids = await this.computeHybrid(
-      preparedChunks.map((chunk) => chunk.content),
-      onProgress,
-    );
+    const preparedChunks = this.toPreparedChunks(input.path, hash, chunks);
 
-    const vectors = preparedChunks.map((chunk, idx) => {
-      const hybrid = hybrids[idx] ?? {
-        dense: new Float32Array(),
-        colbert: new Int8Array(),
-        scale: 1,
-      };
+    // Embed all chunks via native Rust
+    const hybrids = await embedBatch(
+      preparedChunks.map((chunk) => chunk.content)
+    );
+    onProgress?.();
+
+    const vectors: VectorRecord[] = preparedChunks.map((chunk, idx) => {
+      const hybrid = hybrids[idx];
       return {
         ...chunk,
         vector: hybrid.dense,
         colbert: Buffer.from(hybrid.colbert),
-        colbert_scale: hybrid.scale,
-        pooled_colbert_48d: hybrid.pooled_colbert_48d,
-        doc_token_ids: hybrid.token_ids,
+        doc_token_ids: Array.from(hybrid.token_ids),
       };
     });
 
@@ -279,84 +205,32 @@ export class WorkerOrchestrator {
     dense: number[];
     colbert: number[][];
     colbertDim: number;
-    pooled_colbert_48d?: number[];
   }> {
     await this.ensureReady();
 
-    const [denseVector] = await this.granite.runBatch([text]);
+    // Get dense embedding
+    const hybrids = await embedBatch([text]);
+    const denseVector = hybrids[0].dense;
 
-    const encoded = await this.colbert.encodeQuery(text);
+    // Get ColBERT query embedding
+    const colbertFlat = await encodeQueryColbert(text);
+    const dim = CONFIG.COLBERT_DIM;
+    const seqLen = colbertFlat.length / dim;
 
-    const feeds = {
-      input_ids: new ort.Tensor("int64", encoded.input_ids, [
-        1,
-        encoded.input_ids.length,
-      ]),
-      attention_mask: new ort.Tensor("int64", encoded.attention_mask, [
-        1,
-        encoded.attention_mask.length,
-      ]),
-    };
-
-    const sessionOut = await this.colbert.runSession(feeds);
-    const outputName = this.colbert.getOutputName();
-    const output = sessionOut[outputName];
-    if (!output) {
-      throw new Error("ColBERT session output missing embeddings tensor");
-    }
-
-    const data = output.data as Float32Array;
-    const [, seq, dim] = output.dims as number[];
-
+    // Reshape to matrix
     const matrix: number[][] = [];
-
-    for (let s = 0; s < seq; s++) {
-      let sumSq = 0;
-      const offset = s * dim;
-      for (let d = 0; d < dim; d++) {
-        const val = data[offset + d];
-        sumSq += val * val;
-      }
-      const norm = Math.sqrt(sumSq);
-
+    for (let s = 0; s < seqLen; s++) {
       const row: number[] = [];
-      if (norm > 1e-9) {
-        for (let d = 0; d < dim; d++) {
-          row.push(data[offset + d] / norm);
-        }
-      } else {
-        for (let d = 0; d < dim; d++) {
-          row.push(data[offset + d]);
-        }
+      for (let d = 0; d < dim; d++) {
+        row.push(colbertFlat[s * dim + d]);
       }
       matrix.push(row);
     }
 
-    // Compute pooled embedding (mean of tokens)
-    const pooled = new Float32Array(dim);
-    for (const row of matrix) {
-      for (let d = 0; d < dim; d++) {
-        pooled[d] += row[d];
-      }
-    }
-    // Normalize pooled
-    let sumSq = 0;
-    for (let d = 0; d < dim; d++) {
-      pooled[d] /= matrix.length || 1;
-      sumSq += pooled[d] * pooled[d];
-    }
-    const norm = Math.sqrt(sumSq);
-    if (norm > 1e-9) {
-      for (let d = 0; d < dim; d++) {
-        pooled[d] /= norm;
-      }
-    }
-
     return {
-      dense: Array.from(denseVector ?? []),
+      dense: Array.from(denseVector),
       colbert: matrix,
       colbertDim: dim,
-      pooled_colbert_48d: Array.from(pooled),
     };
   }
 
@@ -366,27 +240,37 @@ export class WorkerOrchestrator {
     colbertDim: number;
   }): Promise<number[]> {
     await this.ensureReady();
-    const queryMatrix = input.query.map((row) =>
-      row instanceof Float32Array ? row : new Float32Array(row),
-    );
 
-    return input.docs.map((doc) => {
+    // Flatten query matrix to match native `rerankColbert` signature
+    const queryEmbedding: number[] = [];
+    for (const row of input.query) {
+      for (let i = 0; i < row.length; i++) {
+        queryEmbedding.push(row[i] ?? 0);
+      }
+    }
+
+    const docLengths: number[] = [];
+    const docOffsets: number[] = [];
+    const candidateIndices: number[] = [];
+    const packedTokenChunks: Uint32Array[] = [];
+
+    // Pack all doc embeddings into a single buffer; offsets are element offsets
+    const packedChunks: Int8Array[] = [];
+    let totalElements = 0;
+    let totalTokenIds = 0;
+
+    for (let i = 0; i < input.docs.length; i++) {
+      const doc = input.docs[i];
       const col = doc.colbert;
-      let colbert: Int8Array;
 
+      let colbert: Int8Array;
       if (col instanceof Int8Array) {
         colbert = col;
       } else if (Buffer.isBuffer(col)) {
         colbert = new Int8Array(col.buffer, col.byteOffset, col.byteLength);
-      } else if (
-        col &&
-        typeof col === "object" &&
-        "type" in col &&
-        (col as any).type === "Buffer" &&
-        Array.isArray((col as any).data)
-      ) {
-        // IPC serialization fallback (still copies, but unavoidable without SharedArrayBuffer)
-        colbert = new Int8Array((col as any).data);
+      } else if (ArrayBuffer.isView(col)) {
+        // Handles Uint8Array and other typed arrays (e.g. from LanceDB)
+        colbert = new Int8Array(col.buffer, col.byteOffset, col.byteLength);
       } else if (Array.isArray(col)) {
         colbert = new Int8Array(col);
       } else {
@@ -394,20 +278,85 @@ export class WorkerOrchestrator {
       }
 
       const seqLen = Math.floor(colbert.length / input.colbertDim);
-      const docMatrix: Float32Array[] = [];
-      for (let i = 0; i < seqLen; i++) {
-        const start = i * input.colbertDim;
-        const row = new Float32Array(input.colbertDim);
-        for (let d = 0; d < input.colbertDim; d++) {
-          row[d] = (colbert[start + d] * doc.scale) / 127.0;
-        }
-        docMatrix.push(row);
-      }
-      const tokenIds =
-        Array.isArray(doc.token_ids) && doc.token_ids.length === seqLen
-          ? doc.token_ids
-          : undefined;
-      return maxSim(queryMatrix, docMatrix, tokenIds);
+      const used = colbert.subarray(0, seqLen * input.colbertDim);
+
+      const tokenIdsRaw = doc.token_ids ?? [];
+      const tokenIds = Uint32Array.from(
+        tokenIdsRaw.slice(0, seqLen).map((v) => (Number.isFinite(v) ? v : 0)),
+      );
+
+      docOffsets.push(totalElements);
+      docLengths.push(seqLen);
+      candidateIndices.push(i);
+      packedChunks.push(used);
+      packedTokenChunks.push(tokenIds);
+      totalElements += used.length;
+      totalTokenIds += tokenIds.length;
+    }
+
+    const packed = new Int8Array(totalElements);
+    let cursor = 0;
+    for (const chunk of packedChunks) {
+      packed.set(chunk, cursor);
+      cursor += chunk.length;
+    }
+
+    const packedTokenIds = new Uint32Array(totalTokenIds);
+    let tokenCursor = 0;
+    for (const chunk of packedTokenChunks) {
+      packedTokenIds.set(chunk, tokenCursor);
+      tokenCursor += chunk.length;
+    }
+
+    const result = await rerankColbert({
+      queryEmbedding: new Float32Array(queryEmbedding),
+      docEmbeddings: packed,
+      docTokenIds: packedTokenIds,
+      docLengths,
+      docOffsets,
+      candidateIndices,
+      topK: input.docs.length,
     });
+
+    const scoreByIndex = new Map<number, number>();
+    for (let i = 0; i < result.indices.length; i++) {
+      const idx = result.indices[i] ?? -1;
+      const score = result.scores[i] ?? 0;
+      if (typeof idx === "number") scoreByIndex.set(idx, score);
+    }
+
+    // Return scores aligned to input order (Searcher expects this)
+    return candidateIndices.map((i) => scoreByIndex.get(i) ?? 0);
   }
+}
+
+// =============================================================================
+// Singleton for direct use (no worker pool needed)
+// =============================================================================
+
+let orchestrator: WorkerOrchestrator | null = null;
+
+export function getOrchestrator(): WorkerOrchestrator {
+  if (!orchestrator) {
+    orchestrator = new WorkerOrchestrator();
+  }
+  return orchestrator;
+}
+
+export async function processFile(
+  input: ProcessFileInput
+): Promise<ProcessFileResult> {
+  return getOrchestrator().processFile(input);
+}
+
+export async function encodeQuery(text: string) {
+  return getOrchestrator().encodeQuery(text);
+}
+
+export async function rerank(input: {
+  query: number[][];
+  docs: RerankDoc[];
+  colbertDim: number;
+}) {
+  return getOrchestrator().rerank(input);
 }

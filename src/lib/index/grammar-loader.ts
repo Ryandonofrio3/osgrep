@@ -1,10 +1,9 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-
+import { PATHS } from "../../config";
 import { LANGUAGES } from "../core/languages";
 
-export const GRAMMARS_DIR = path.join(os.homedir(), ".osgrep", "grammars");
+export const GRAMMARS_DIR = PATHS.grammars;
 
 const GRAMMAR_URLS: Record<string, string> = {};
 for (const lang of LANGUAGES) {

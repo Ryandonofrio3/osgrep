@@ -1,11 +1,8 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
-import { MODEL_IDS } from "../../config";
+import { MODEL_IDS, PATHS } from "../../config";
 
-const HOMEDIR = os.homedir();
-const CACHE_DIR = path.join(HOMEDIR, ".osgrep", "models");
 const LOG_MODELS =
   process.env.OSGREP_DEBUG_MODELS === "1" ||
   process.env.OSGREP_DEBUG_MODELS === "true";
@@ -61,8 +58,8 @@ export async function downloadModels(): Promise<void> {
  */
 export function areModelsDownloaded(): boolean {
   // Check if the model directories exist in the cache
-  const embedPath = path.join(CACHE_DIR, ...MODEL_IDS.embed.split("/"));
-  const colbertPath = path.join(CACHE_DIR, ...MODEL_IDS.colbert.split("/"));
+  const embedPath = path.join(PATHS.models, ...MODEL_IDS.embed.split("/"));
+  const colbertPath = path.join(PATHS.models, ...MODEL_IDS.colbert.split("/"));
 
   return fs.existsSync(embedPath) && fs.existsSync(colbertPath);
 }

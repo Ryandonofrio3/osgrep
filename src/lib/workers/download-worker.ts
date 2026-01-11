@@ -1,14 +1,11 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { parentPort } from "node:worker_threads";
 import { env, pipeline } from "@huggingface/transformers";
-import { MODEL_IDS } from "../../config";
+import { MODEL_IDS, PATHS } from "../../config";
 
 // Configuration
-const HOMEDIR = os.homedir();
-const CACHE_DIR = path.join(HOMEDIR, ".osgrep", "models");
-env.cacheDir = CACHE_DIR;
+env.cacheDir = PATHS.models;
 env.allowLocalModels = true;
 env.allowRemoteModels = true;
 
@@ -67,8 +64,8 @@ async function downloadModelWithTimeout(modelId: string, dtype: PipelineDType) {
 // Helper to manually download extra files like skiplist.json
 async function downloadExtraFile(modelId: string, filename: string) {
   const url = `https://huggingface.co/${modelId}/resolve/main/${filename}`;
-  // Construct path: ~/.osgrep/models/ryandono/osgrep-colbert-q8/skiplist.json
-  const destDir = path.join(CACHE_DIR, ...modelId.split("/"));
+  // Construct path: $OSGREP_HOME/models/ryandono/osgrep-colbert-q8/skiplist.json
+  const destDir = path.join(PATHS.models, ...modelId.split("/"));
   const destPath = path.join(destDir, filename);
 
   if (!fs.existsSync(destDir)) {

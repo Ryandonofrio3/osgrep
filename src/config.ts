@@ -46,8 +46,17 @@ export const MAX_WORKER_MEMORY_MB = Number.parseInt(
   10,
 );
 
-const HOME = os.homedir();
-const GLOBAL_ROOT = path.join(HOME, ".osgrep");
+function getOsgrepHome(): string {
+  if (process.env.OSGREP_HOME) {
+    return path.resolve(process.env.OSGREP_HOME);
+  }
+  // XDG compliance: $XDG_CACHE_HOME/osgrep or ~/.cache/osgrep
+  const xdgCache =
+    process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
+  return path.join(xdgCache, "osgrep");
+}
+
+const GLOBAL_ROOT = getOsgrepHome();
 
 export const PATHS = {
   globalRoot: GLOBAL_ROOT,

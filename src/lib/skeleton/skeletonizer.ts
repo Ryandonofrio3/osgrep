@@ -300,7 +300,7 @@ export class Skeletonizer {
     }
 
     // Extract metadata from the body
-    const referencedSymbols = this.extractReferencedSymbols(bodyNode);
+    const referencedSymbols = this.extractReferencedSymbols(bodyNode, langId);
     const complexity = this.calculateComplexity(bodyNode);
     const role = this.classifyRole(complexity, referencedSymbols.length);
 
@@ -445,31 +445,144 @@ export class Skeletonizer {
   /**
    * Extract referenced symbols (function calls) from a node.
    */
-  private extractReferencedSymbols(node: TreeSitterNode): string[] {
+  private extractReferencedSymbols(
+    node: TreeSitterNode,
+    langId: string,
+  ): string[] {
     const refs: string[] = [];
     const seen = new Set<string>();
 
-    const extract = (n: TreeSitterNode) => {
-      if (n.type === "call_expression" || n.type === "call") {
-        const func = n.childForFieldName?.("function");
-        if (func) {
-          let funcName = func.text;
+    const getNavigationIdentifier = (node: TreeSitterNode): string | null => {
+      if (node.type !== "navigation_expression") return null;
+      const suffixes = (node.namedChildren || []).filter(
+        (child) => child.type === "navigation_suffix",
+      );
+      const lastSuffix = suffixes[suffixes.length - 1];
+      if (lastSuffix) {
+        const simple = (lastSuffix.namedChildren || []).find(
+          (child) => child.type === "simple_identifier",
+        );
+        if (simple?.text) return simple.text;
+      }
+      // Fallback: look at nested navigation expressions or identifiers
+      const fallbacks = [...(node.namedChildren || [])].reverse();
+      for (const child of fallbacks) {
+        if (child.type === "simple_identifier" && child.text) {
+          return child.text;
+        }
+        if (child.type === "navigation_expression") {
+          const nested = getNavigationIdentifier(child);
+          if (nested) return nested;
+        }
+      }
+      return null;
+    };
 
-          // Handle member access (obj.method) - extract just method
-          if (func.type === "member_expression") {
-            const prop = func.childForFieldName?.("property");
-            if (prop) funcName = prop.text;
-          } else if (func.type === "attribute") {
-            const attr = func.childForFieldName?.("attribute");
-            if (attr) funcName = attr.text;
+    const getCallFunctionNode = (
+      node: TreeSitterNode,
+    ): TreeSitterNode | null => {
+      const direct =
+        node.childForFieldName?.("function") ||
+        node.childForFieldName?.("name") ||
+        null;
+      if (direct) return direct;
+      return node.namedChildren && node.namedChildren.length > 0
+        ? node.namedChildren[0]
+        : null;
+    };
+
+    const extractFunctionName = (
+      func: TreeSitterNode | null,
+    ): string | null => {
+      if (!func) return null;
+      if (func.type === "member_expression") {
+        const prop = func.childForFieldName?.("property");
+        if (prop?.text) return prop.text;
+      } else if (func.type === "attribute") {
+        const attr = func.childForFieldName?.("attribute");
+        if (attr?.text) return attr.text;
+      } else if (func.type === "navigation_expression") {
+        const navName = getNavigationIdentifier(func);
+        if (navName) return navName;
+      }
+
+      // Fallback: use direct text (strip qualifiers like Module.)
+      const raw = func.text || "";
+      if (raw.includes(".")) {
+        const lastSegment = raw.split(".").pop();
+        if (lastSegment) return lastSegment;
+      }
+      return raw || null;
+    };
+
+    const extractSwiftArgumentLabels = (
+      callNode: TreeSitterNode,
+    ): string[] => {
+      const suffix =
+        callNode.childForFieldName?.("call_suffix") ||
+        (callNode.namedChildren || []).find(
+          (child) => child.type === "call_suffix",
+        );
+      if (!suffix) return [];
+
+      const labels: string[] = [];
+      const collect = (current: TreeSitterNode) => {
+        if (current.type === "value_argument") {
+          const labelNode =
+            current.childForFieldName?.("label") ||
+            (current.namedChildren || []).find(
+              (child) => child.type === "value_argument_label",
+            );
+
+          if (labelNode) {
+            const simple = (labelNode.namedChildren || []).find(
+              (child) => child.type === "simple_identifier",
+            );
+            labels.push(simple?.text || labelNode.text.replace(/[:\s]/g, ""));
+          } else {
+            labels.push("_");
           }
-
-          // Dedupe and filter noise
-          if (funcName && !seen.has(funcName) && funcName.length < 30) {
-            seen.add(funcName);
-            refs.push(funcName);
+        } else {
+          for (const child of current.namedChildren || []) {
+            collect(child);
           }
         }
+      };
+
+      collect(suffix);
+      return labels;
+    };
+
+    const formatSwiftFunction = (
+      baseName: string,
+      callNode: TreeSitterNode,
+    ): string => {
+      const labels = extractSwiftArgumentLabels(callNode);
+      const meaningful = labels.filter((label) => label && label !== "_");
+      if (labels.length === 0 || meaningful.length === 0) return baseName;
+
+      const truncated = labels.slice(0, 3).map((label) => `${label || "_"}:`);
+      if (labels.length > 3) truncated.push("…");
+      return `${baseName}(${truncated.join("")})`;
+    };
+
+    const pushRef = (name: string | null) => {
+      if (!name) return;
+      const trimmed = name.trim();
+      if (!trimmed || trimmed.length >= 30) return;
+      if (seen.has(trimmed)) return;
+      seen.add(trimmed);
+      refs.push(trimmed);
+    };
+
+    const extract = (n: TreeSitterNode) => {
+      if (n.type === "call_expression" || n.type === "call") {
+        const funcNode = getCallFunctionNode(n);
+        let funcName = extractFunctionName(funcNode);
+        if (funcName && langId === "swift") {
+          funcName = formatSwiftFunction(funcName, n);
+        }
+        pushRef(funcName);
       } else if (
         n.type === "method_invocation" || // Java
         n.type === "invocation_expression" // C#
@@ -478,8 +591,7 @@ export class Skeletonizer {
         const nameNode =
           n.childForFieldName?.("name") || n.childForFieldName?.("function");
         if (nameNode) {
-          refs.push(nameNode.text);
-          seen.add(nameNode.text);
+          pushRef(nameNode.text);
         }
       } else if (
         n.type === "method_call" || // Ruby
@@ -489,8 +601,7 @@ export class Skeletonizer {
         const nameNode =
           n.childForFieldName?.("method") || n.childForFieldName?.("name");
         if (nameNode) {
-          refs.push(nameNode.text);
-          seen.add(nameNode.text);
+          pushRef(nameNode.text);
         }
       }
 

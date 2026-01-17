@@ -176,6 +176,25 @@ export const LANGUAGES: LanguageDefinition[] = [
     ],
   },
   {
+    id: "swift",
+    extensions: [".swift"],
+    grammar: {
+      name: "swift",
+      url: "https://github.com/alex-pinkus/tree-sitter-swift/releases/download/0.7.1/tree-sitter-swift.wasm",
+    },
+    definitionTypes: [
+      "function_declaration",
+      "class_declaration",
+      "protocol_declaration",
+      "property_declaration",
+      "typealias_declaration",
+      "init_declaration",
+      "deinit_declaration",
+      "macro_declaration",
+      "subscript_declaration",
+    ],
+  },
+  {
     id: "json",
     extensions: [".json"],
     grammar: {

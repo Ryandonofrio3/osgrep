@@ -201,3 +201,87 @@ describe("min-score filtering", () => {
     consoleSpy.mockRestore();
   });
 });
+
+describe("unknown option handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    spinner.text = "";
+    (search as Command).exitOverride();
+  });
+
+  it("rejects unknown options instead of misparsing them as arguments", async () => {
+    // Before fix: --json was treated as pattern, "query" as path
+    // After fix: Commander properly rejects unknown options
+    await expect(
+      (search as Command).parseAsync(["--json", "query", "."], { from: "user" })
+    ).rejects.toThrow(/unknown option/i);
+  });
+
+  it("rejects unknown options even when placed after arguments", async () => {
+    await expect(
+      (search as Command).parseAsync(["query", ".", "--json"], { from: "user" })
+    ).rejects.toThrow(/unknown option/i);
+  });
+
+  it("rejects excess arguments", async () => {
+    await expect(
+      (search as Command).parseAsync(["query", ".", "extra", "args"], {
+        from: "user",
+      })
+    ).rejects.toThrow(/too many arguments/i);
+  });
+
+  it("rejects multiple unknown options", async () => {
+    await expect(
+      (search as Command).parseAsync(["--json", "--xml", "query", "."], {
+        from: "user",
+      })
+    ).rejects.toThrow(/unknown option/i);
+  });
+
+  it("rejects unknown options mixed with valid options", async () => {
+    await expect(
+      (search as Command).parseAsync(["query", "--no-rerank", "--json", "."], {
+        from: "user",
+      })
+    ).rejects.toThrow(/unknown option/i);
+  });
+
+  it("rejects unknown options with equals sign", async () => {
+    await expect(
+      (search as Command).parseAsync(["--json=true", "query", "."], {
+        from: "user",
+      })
+    ).rejects.toThrow(/unknown option/i);
+  });
+
+  it("rejects short unknown options", async () => {
+    await expect(
+      (search as Command).parseAsync(["-j", "query", "."], { from: "user" })
+    ).rejects.toThrow(/unknown option/i);
+  });
+
+  it("rejects unknown option that looks like a path", async () => {
+    await expect(
+      (search as Command).parseAsync(["--./path", "query"], { from: "user" })
+    ).rejects.toThrow(/unknown option/i);
+  });
+
+  it("accepts valid options without error", async () => {
+    // Regression: ensure known options still work
+    await expect(
+      (search as Command).parseAsync(["query", ".", "-m", "5", "--compact"], {
+        from: "user",
+      })
+    ).resolves.not.toThrow();
+  });
+
+  it("allows pattern starting with dash using -- separator", async () => {
+    // Standard CLI convention: -- ends option parsing
+    await expect(
+      (search as Command).parseAsync(["--", "-pattern-with-dash", "."], {
+        from: "user",
+      })
+    ).resolves.not.toThrow();
+  });
+});

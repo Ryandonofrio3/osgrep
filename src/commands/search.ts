@@ -390,8 +390,6 @@ export const search: Command = new CommanderCommand("search")
   )
   .argument("<pattern>", "The pattern to search for")
   .argument("[path]", "The path to search in")
-  .allowUnknownOption(true)
-  .allowExcessArguments(true)
   .action(async (pattern, exec_path, _options, cmd) => {
     const options: {
       m: string;
@@ -405,10 +403,6 @@ export const search: Command = new CommanderCommand("search")
       dryRun: boolean;
       skeleton: boolean;
     } = cmd.optsWithGlobals();
-
-    if (exec_path?.startsWith("--")) {
-      exec_path = "";
-    }
 
     const root = process.cwd();
     const minScore = Number.isFinite(Number.parseFloat(options.minScore))

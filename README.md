@@ -83,6 +83,14 @@ In our public benchmarks, `osgrep` can save about 20% of your LLM tokens and del
 3. Highly recommend indexing your code base before using the plugin.
 4. The plugin's hooks auto-start `osgrep serve` in the background and shut it down on session end. OC will use `osgrep` for semantic searches automatically but can be encouraged to do so.
 
+### Install with `sk`
+
+Install via [sk](https://github.com/803/skills-supply), the universal package manager for AI agent skills (supports Claude, Codex, OpenCode, etc...).
+
+```bash
+sk pkg add claude-plugin osgrep@Ryandonofrio3/osgrep
+sk sync
+```
 
 ## Commands
 

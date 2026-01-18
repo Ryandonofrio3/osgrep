@@ -16,6 +16,7 @@ import { setup } from "./commands/setup";
 import { skeleton } from "./commands/skeleton";
 import { symbols } from "./commands/symbols";
 import { trace } from "./commands/trace";
+import { PATHS } from "./config";
 
 program
   .version(
@@ -31,14 +32,12 @@ program
     process.env.OSGREP_STORE || undefined,
   );
 
-const legacyDataPath = path.join(
-  require("node:os").homedir(),
-  ".osgrep",
-  "data",
-);
+const legacyDataPath = path.join(PATHS.globalRoot, "data");
 const isIndexCommand = process.argv.some((arg) => arg === "index");
 if (isIndexCommand && fs.existsSync(legacyDataPath)) {
-  console.log("⚠️  Legacy global database detected at ~/.osgrep/data.");
+  console.log(
+    `⚠️  Legacy global database detected at ${PATHS.globalRoot}/data.`,
+  );
   console.log("   osgrep now uses per-project .osgrep/ directories.");
   console.log(
     "   Run 'osgrep index' in your project root to create a new index.",

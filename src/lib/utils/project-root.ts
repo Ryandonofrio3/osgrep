@@ -1,5 +1,7 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 import { PATHS } from "../../config";
 
 export interface ProjectPaths {
@@ -62,13 +64,44 @@ function fileContainsEntry(filePath: string, entry: string): boolean {
   }
 }
 
+function getGlobalExcludesPath(): string | null {
+  let configuredPath: string | null = null;
+
+  try {
+    // Use --path flag so Git handles tilde expansion and ~user cases
+    const result = execSync("git config --path --get core.excludesFile", {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1000,
+    }).trim();
+    if (result) {
+      // Resolve relative paths against cwd
+      configuredPath = path.isAbsolute(result) ? result : path.resolve(process.cwd(), result);
+    }
+  } catch {
+    // Ignore errors (including timeout or no config set)
+  }
+
+  // If not explicitly configured, use Git's default location
+  if (!configuredPath) {
+    const configDir = process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config");
+    configuredPath = path.join(configDir, "git", "ignore");
+  }
+
+  return configuredPath;
+}
+
 function ensureGitignoreEntry(root: string) {
   // Only add when inside a git repo.
   if (!fs.existsSync(path.join(root, ".git"))) return;
 
   const entry = ".osgrep";
 
-  // Check .git/info/exclude first
+  // Check global excludes file first
+  const globalExcludesPath = getGlobalExcludesPath();
+  if (globalExcludesPath && fileContainsEntry(globalExcludesPath, entry)) return;
+
+  // Check .git/info/exclude
   const excludePath = path.join(root, ".git", "info", "exclude");
   if (fileContainsEntry(excludePath, entry)) return;
 

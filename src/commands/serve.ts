@@ -28,8 +28,9 @@ export const serve = new Command("serve")
     process.env.OSGREP_PORT || "4444",
   )
   .option("-b, --background", "Run in background", false)
+  .option("--no-rerank", "Disable neural reranking for faster responses (uses fusion scoring instead)")
   .action(async (_args, cmd) => {
-    const options: { port: string; background: boolean } =
+    const options: { port: string; background: boolean; rerank: boolean } =
       cmd.optsWithGlobals();
     let port = parseInt(options.port, 10);
     const startPort = port;
@@ -174,10 +175,13 @@ export const serve = new Command("serve")
                   ac.abort();
                 });
 
+                // Respect rerank from request body, falling back to CLI default
+                const rerank = typeof body.rerank === "boolean" ? body.rerank : options.rerank;
+
                 const result = await searcher.search(
                   query,
                   limit,
-                  { rerank: true },
+                  { rerank },
                   undefined,
                   searchPath,
                   undefined, // intent

@@ -388,6 +388,10 @@ export const search: Command = new CommanderCommand("search")
     "Show code skeleton for matching files instead of snippets",
     false,
   )
+  .option(
+    "--no-rerank",
+    "Disable neural reranking for faster results (uses fusion scoring instead)",
+  )
   .argument("<pattern>", "The pattern to search for")
   .argument("[path]", "The path to search in")
   .action(async (pattern, exec_path, _options, cmd) => {
@@ -402,6 +406,7 @@ export const search: Command = new CommanderCommand("search")
       sync: boolean;
       dryRun: boolean;
       skeleton: boolean;
+      rerank: boolean;
     } = cmd.optsWithGlobals();
 
     const root = process.cwd();
@@ -427,6 +432,7 @@ export const search: Command = new CommanderCommand("search")
             path: exec_path
               ? path.relative(projectRootForServer, path.resolve(exec_path))
               : undefined,
+            rerank: options.rerank,
           }),
         });
 
@@ -597,7 +603,7 @@ export const search: Command = new CommanderCommand("search")
       const searchResult = await searcher.search(
         pattern,
         parseInt(options.m, 10),
-        { rerank: true },
+        { rerank: options.rerank },
         undefined,
         exec_path ? path.relative(projectRoot, path.resolve(exec_path)) : "",
       );
